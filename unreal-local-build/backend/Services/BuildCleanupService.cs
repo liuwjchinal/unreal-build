@@ -120,7 +120,7 @@ public sealed class BuildCleanupService(
             build.BuildRootPath = string.Empty;
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "build cleanup", cancellationToken);
         logger.LogInformation(
             "Pruned local build cache for {Count} finished builds. RetentionDays={RetentionDays}, KeepRecentSuccessfulBuildsPerProject={KeepRecent}, MaxBuildCacheSizeGb={MaxCacheGb}, CleanupArchiveDirectories={CleanupArchiveDirectories}",
             buildsToPrune.Count,

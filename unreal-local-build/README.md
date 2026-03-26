@@ -2,6 +2,10 @@
 
 轻量级 Unreal Engine Windows 本地打包 Web 工具。
 
+补充文档：
+
+- Unreal 源码打包流程说明：[unreal-engine-uat-build-flow.md](/D:/UnrealGit/unreal-build/unreal-local-build/docs/unreal-engine-uat-build-flow.md#L1)
+
 适用场景：
 - 单台 Windows 打包机
 - SVN 工作副本更新

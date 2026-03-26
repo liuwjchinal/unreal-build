@@ -43,7 +43,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<BuildOrchestrator>
 builder.Services.AddHostedService<BuildCleanupService>();
 builder.Services.AddDbContextFactory<BuildDbContext>(options =>
 {
-    options.UseSqlite($"Data Source={storagePaths.DatabasePath}");
+    options.UseSqlite(SqliteExecution.BuildConnectionString(storagePaths.DatabasePath));
 });
 
 var app = builder.Build();
@@ -53,6 +53,7 @@ storagePaths.EnsureCreated();
 await using (var db = await app.Services.GetRequiredService<IDbContextFactory<BuildDbContext>>().CreateDbContextAsync())
 {
     await DatabaseMigrator.MigrateAsync(db, CancellationToken.None);
+    await SqliteExecution.ConfigureDatabaseAsync(db, CancellationToken.None);
 }
 
 if (app.Environment.IsDevelopment())

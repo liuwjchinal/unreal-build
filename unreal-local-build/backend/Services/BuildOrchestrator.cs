@@ -42,6 +42,7 @@ public sealed class BuildOrchestrator(
     private readonly SemaphoreSlim _uatSlots = new(Math.Max(1, appOptions.UatConcurrency), Math.Max(1, appOptions.UatConcurrency));
     private readonly int _logBatchSize = Math.Max(1, appOptions.LogEventBatchSize);
     private readonly TimeSpan _logFlushInterval = TimeSpan.FromMilliseconds(Math.Max(100, appOptions.LogEventFlushMilliseconds));
+    private readonly TimeSpan _progressPersistInterval = TimeSpan.FromMilliseconds(750);
 
     public async Task<BuildRecord> EnqueueBuildAsync(QueueBuildRequest request, CancellationToken cancellationToken)
     {
@@ -96,7 +97,7 @@ public sealed class BuildOrchestrator(
         build.UatCommandLine = uatCommand.DisplayString;
 
         db.Builds.Add(build);
-        await db.SaveChangesAsync(cancellationToken);
+        await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "enqueue build", cancellationToken);
 
         await RefreshQueuedBuildsAsync(cancellationToken);
         await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-status"));
@@ -125,7 +126,7 @@ public sealed class BuildOrchestrator(
             build.StatusMessage = AppText.BuildCanceled;
             build.ErrorSummary = AppText.UserCanceledQueuedBuild;
             build.FinishedAtUtc = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(cancellationToken);
+            await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "cancel queued build", cancellationToken);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-finished"));
             await RefreshQueuedBuildsAsync(cancellationToken);
             SignalDispatch();
@@ -262,7 +263,7 @@ public sealed class BuildOrchestrator(
         build.ProgressPercent = 3;
         build.StartedAtUtc = DateTimeOffset.UtcNow;
         build.StatusMessage = AppText.SyncingSource;
-        await db.SaveChangesAsync(cancellationToken);
+        await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "mark build started", cancellationToken);
         await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-status"));
 
         await using var logStream = new FileStream(build.LogFilePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
@@ -301,13 +302,13 @@ public sealed class BuildOrchestrator(
             build.ZipFilePath = storagePaths.ResolveZipPath(build, build.QueuedAtUtc);
             build.UatCommandLine = BuildCommandFactory.CreateUatCommand(project, build).DisplayString;
             Directory.CreateDirectory(build.ArchiveDirectoryPath);
-            await db.SaveChangesAsync(cancellationToken);
+            await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "store resolved revision", cancellationToken);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-progress"));
 
             build.CurrentPhase = BuildPhase.Build;
             build.ProgressPercent = Math.Max(build.ProgressPercent, 12);
             build.StatusMessage = AppText.WaitingForUatSlot;
-            await db.SaveChangesAsync(cancellationToken);
+            await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "wait for UAT slot", cancellationToken);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-progress"));
 
             var uatSlotAcquired = false;
@@ -318,7 +319,7 @@ public sealed class BuildOrchestrator(
                 build.CurrentPhase = BuildPhase.Build;
                 build.ProgressPercent = Math.Max(build.ProgressPercent, 12);
                 build.StatusMessage = AppText.RunningBuildCookRun;
-                await db.SaveChangesAsync(cancellationToken);
+                await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "acquire UAT slot", cancellationToken);
                 await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-progress"));
 
                 var uatExitCode = await RunProcessAsync(
@@ -347,7 +348,7 @@ public sealed class BuildOrchestrator(
             build.CurrentPhase = BuildPhase.Zip;
             build.ProgressPercent = 96;
             build.StatusMessage = AppText.ZippingArtifacts;
-            await db.SaveChangesAsync(cancellationToken);
+            await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "zip artifacts", cancellationToken);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-progress"));
 
             if (!string.IsNullOrWhiteSpace(build.ZipFilePath))
@@ -374,7 +375,7 @@ public sealed class BuildOrchestrator(
             build.FinishedAtUtc = DateTimeOffset.UtcNow;
             build.ExitCode = 0;
             build.DownloadUrl = $"/api/builds/{build.Id}/download";
-            await db.SaveChangesAsync(cancellationToken);
+            await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "mark build succeeded", cancellationToken);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-finished"));
         }
         catch (OperationCanceledException)
@@ -388,7 +389,7 @@ public sealed class BuildOrchestrator(
             build.ErrorSummary = runtime.CancellationReason ?? AppText.ServiceStoppingInterrupted;
             build.FinishedAtUtc = DateTimeOffset.UtcNow;
             build.DownloadUrl = null;
-            await db.SaveChangesAsync(CancellationToken.None);
+            await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "mark build interrupted", CancellationToken.None);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-finished"));
         }
         catch (Exception ex)
@@ -401,7 +402,7 @@ public sealed class BuildOrchestrator(
             build.ErrorSummary = ex.Message;
             build.FinishedAtUtc = DateTimeOffset.UtcNow;
             build.DownloadUrl = null;
-            await db.SaveChangesAsync(CancellationToken.None);
+            await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "mark build crashed", CancellationToken.None);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-finished"));
         }
     }
@@ -451,6 +452,7 @@ public sealed class BuildOrchestrator(
 
         var pendingLines = new List<string>(_logBatchSize);
         var nextFlushAt = DateTime.UtcNow.Add(_logFlushInterval);
+        var lastProgressPersistAt = DateTime.MinValue;
 
         await foreach (var line in lineChannel.Reader.ReadAllAsync(cancellationToken))
         {
@@ -460,11 +462,23 @@ public sealed class BuildOrchestrator(
 
             if (TryAdvanceProgress(line, progress, out var newPhase, out var newPercent, out var message))
             {
+                var phaseChanged = build.CurrentPhase != newPhase;
+                var messageChanged = !string.Equals(build.StatusMessage, message, StringComparison.Ordinal);
+                var percentChanged = build.ProgressPercent != Math.Max(build.ProgressPercent, newPercent);
+
                 build.CurrentPhase = newPhase;
                 build.ProgressPercent = Math.Max(build.ProgressPercent, newPercent);
                 build.StatusMessage = message;
-                await db.SaveChangesAsync(cancellationToken);
-                await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-progress"));
+                var shouldPersistProgress = phaseChanged ||
+                                            messageChanged ||
+                                            (percentChanged && DateTime.UtcNow - lastProgressPersistAt >= _progressPersistInterval);
+
+                if (shouldPersistProgress)
+                {
+                    await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "persist build progress", cancellationToken);
+                    lastProgressPersistAt = DateTime.UtcNow;
+                    await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-progress"));
+                }
             }
 
             var shouldFlush = pendingLines.Count >= _logBatchSize || DateTime.UtcNow >= nextFlushAt;
@@ -556,7 +570,7 @@ public sealed class BuildOrchestrator(
         {
             build.ErrorSummary = AppText.UatSingleInstanceConflict;
         }
-        await db.SaveChangesAsync(cancellationToken);
+        await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "mark build failed", cancellationToken);
         await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-finished"));
     }
 
@@ -576,7 +590,7 @@ public sealed class BuildOrchestrator(
             build.FinishedAtUtc = DateTimeOffset.UtcNow;
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "recover interrupted builds", cancellationToken);
         await RefreshQueuedBuildsAsync(cancellationToken);
         await automationToolJanitor.CleanupIfSystemIdleAsync("Service startup recovery", cancellationToken);
     }
@@ -609,7 +623,7 @@ public sealed class BuildOrchestrator(
 
         if (changed)
         {
-            await db.SaveChangesAsync(cancellationToken);
+            await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "refresh queued builds", cancellationToken);
         }
 
         foreach (var build in queuedBuilds)
