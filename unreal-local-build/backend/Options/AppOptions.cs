@@ -32,5 +32,11 @@ public sealed class AppOptions
 
     public int CleanupIntervalMinutes { get; init; } = 60;
 
+    public int KeepRecentSuccessfulBuildsPerProject { get; init; } = 3;
+
+    public int MaxBuildCacheSizeGb { get; init; } = 20;
+
+    public bool CleanupArchiveDirectories { get; init; } = false;
+
     public string FrontendDevOrigin { get; init; } = "http://localhost:5173";
 }

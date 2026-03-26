@@ -69,12 +69,16 @@ api.MapGet("/health", () => Results.Ok(new
 {
     ok = true,
     serverTimeUtc = DateTimeOffset.UtcNow,
+    serverUrl = appOptions.ServerUrl,
     globalConcurrency = appOptions.GlobalConcurrency,
     uatConcurrency = appOptions.UatConcurrency,
     automationToolCleanupEnabled = appOptions.AutomationToolCleanupEnabled,
     automationToolCleanupMode = appOptions.AutomationToolCleanupMode,
     retentionDays = appOptions.BuildRetentionDays,
-    cleanupIntervalMinutes = appOptions.CleanupIntervalMinutes
+    cleanupIntervalMinutes = appOptions.CleanupIntervalMinutes,
+    keepRecentSuccessfulBuildsPerProject = appOptions.KeepRecentSuccessfulBuildsPerProject,
+    maxBuildCacheSizeGb = appOptions.MaxBuildCacheSizeGb,
+    cleanupArchiveDirectories = appOptions.CleanupArchiveDirectories
 }));
 
 api.MapGet("/projects", async (IDbContextFactory<BuildDbContext> dbFactory, CancellationToken cancellationToken) =>
@@ -489,6 +493,8 @@ if (File.Exists(Path.Combine(app.Environment.WebRootPath ?? string.Empty, "index
 {
     app.MapFallbackToFile("index.html");
 }
+
+app.Logger.LogInformation("Backend listening on {ServerUrl}", appOptions.ServerUrl);
 
 app.Run();
 

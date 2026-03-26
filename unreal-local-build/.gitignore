@@ -2,5 +2,6 @@ backend/bin/
 backend/obj/
 backend/AppData/
 backend/wwwroot/
+backend/*.user
 frontend/node_modules/
 frontend/dist/
