@@ -84,7 +84,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
                 var runUatPath = Path.Combine(request.EngineRootPath, "Engine", "Build", "BatchFiles", "RunUAT.bat");
                 if (!File.Exists(runUatPath))
                 {
-                    Add(nameof(request.EngineRootPath), "未找到 Engine\\Build\\BatchFiles\\RunUAT.bat。");
+                    Add(nameof(request.EngineRootPath), @"未找到 Engine\Build\BatchFiles\RunUAT.bat。");
                 }
             }
         }
@@ -310,8 +310,20 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
 
         if (svnInfo.ExitCode != 0)
         {
-            AddError(nameof(UpsertProjectRequest.WorkingCopyPath), "SVN 工作副本不可用，`svn info` 执行失败。");
-            return;
+            logger.LogInformation("`svn info` failed for working copy {WorkingCopyPath}. Attempting automatic `svn cleanup`.", workingCopyPath);
+            await TryCleanupWorkingCopyAsync(workingCopyPath, cancellationToken);
+
+            svnInfo = await RunProcessAsync(
+                "svn",
+                ["info", workingCopyPath],
+                workingCopyPath,
+                cancellationToken);
+
+            if (svnInfo.ExitCode != 0)
+            {
+                AddError(nameof(UpsertProjectRequest.WorkingCopyPath), "SVN 工作副本不可用，`svn info` 执行失败。系统已自动尝试 `svn cleanup`，但未恢复。");
+                return;
+            }
         }
 
         if (!includeSvnStatus)
@@ -327,14 +339,50 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
 
         if (svnStatus.ExitCode != 0)
         {
-            AddError(nameof(UpsertProjectRequest.WorkingCopyPath), "SVN 工作副本状态不可用，`svn status` 执行失败。");
-            return;
+            logger.LogInformation("`svn status` failed for working copy {WorkingCopyPath}. Attempting automatic `svn cleanup`.", workingCopyPath);
+            await TryCleanupWorkingCopyAsync(workingCopyPath, cancellationToken);
+
+            svnStatus = await RunProcessAsync(
+                "svn",
+                ["status", workingCopyPath],
+                workingCopyPath,
+                cancellationToken);
+
+            if (svnStatus.ExitCode != 0)
+            {
+                AddError(nameof(UpsertProjectRequest.WorkingCopyPath), "SVN 工作副本状态不可用，`svn status` 执行失败。系统已自动尝试 `svn cleanup`，但未恢复。");
+                return;
+            }
         }
 
-        var invalidStatusLine = svnStatus.Output
+        var statusLines = svnStatus.Output
             .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .FirstOrDefault(IsInvalidSvnStatusLine);
+            .ToList();
 
+        var lockedStatusLine = statusLines.FirstOrDefault(IsLockedSvnStatusLine);
+        if (lockedStatusLine is not null)
+        {
+            logger.LogInformation("Detected locked SVN working copy {WorkingCopyPath}. Attempting automatic `svn cleanup`.", workingCopyPath);
+            await TryCleanupWorkingCopyAsync(workingCopyPath, cancellationToken);
+
+            svnStatus = await RunProcessAsync(
+                "svn",
+                ["status", workingCopyPath],
+                workingCopyPath,
+                cancellationToken);
+
+            if (svnStatus.ExitCode != 0)
+            {
+                AddError(nameof(UpsertProjectRequest.WorkingCopyPath), "SVN 工作副本存在锁，系统已自动尝试 `svn cleanup`，但 `svn status` 仍失败。");
+                return;
+            }
+
+            statusLines = svnStatus.Output
+                .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToList();
+        }
+
+        var invalidStatusLine = statusLines.FirstOrDefault(IsInvalidSvnStatusLine);
         if (invalidStatusLine is not null)
         {
             AddError(nameof(UpsertProjectRequest.WorkingCopyPath), $"SVN 工作副本存在异常状态：{invalidStatusLine}");
@@ -369,6 +417,32 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         }
 
         return line.Length > 2 && line[2] == 'L';
+    }
+
+    private static bool IsLockedSvnStatusLine(string line)
+    {
+        return !string.IsNullOrWhiteSpace(line) && line.Length > 2 && line[2] == 'L';
+    }
+
+    private async Task TryCleanupWorkingCopyAsync(string workingCopyPath, CancellationToken cancellationToken)
+    {
+        var cleanup = await RunProcessAsync(
+            "svn",
+            ["cleanup", workingCopyPath],
+            workingCopyPath,
+            cancellationToken);
+
+        if (cleanup.ExitCode == 0)
+        {
+            logger.LogInformation("Automatic `svn cleanup` succeeded for working copy {WorkingCopyPath}.", workingCopyPath);
+            return;
+        }
+
+        logger.LogWarning(
+            "Automatic `svn cleanup` failed for working copy {WorkingCopyPath}. ExitCode={ExitCode}. Output={Output}",
+            workingCopyPath,
+            cleanup.ExitCode,
+            cleanup.Output);
     }
 
     private async Task<(int ExitCode, string Output)> RunProcessAsync(
