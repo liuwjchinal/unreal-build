@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: unreal-local-build/frontend/package-lock.json
+
+      - name: Restore backend
+        run: dotnet restore .\unreal-local-build\backend\Backend.csproj
+
+      - name: Build backend
+        run: dotnet build .\unreal-local-build\backend\Backend.csproj --no-restore
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: .\unreal-local-build\frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: .\unreal-local-build\frontend

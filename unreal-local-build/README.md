@@ -316,6 +316,22 @@ cd .\unreal-local-build\frontend
 npm run dev
 ```
 
+也可以直接双击或执行根目录下的一键启动脚本：
+
+```powershell
+cd .\unreal-local-build
+.\start-dev.bat
+```
+
+脚本位置：
+- [start-dev.bat](/D:/UnrealGit/unreal-build/unreal-local-build/start-dev.bat#L1)
+
+脚本行为：
+- 打开一个后端终端窗口
+- 打开一个前端终端窗口
+- 后端使用 `--no-launch-profile`，避免监听地址被开发配置覆盖
+- 前端默认监听 `0.0.0.0:5173`
+
 ### 生产模式
 
 先构建前端：
@@ -457,3 +473,27 @@ netsh advfirewall firewall add rule name="Unreal Local Build 5080" dir=in action
 - 构建是否真正成功
 - zip 是否仍在生成
 - 本地磁盘空间是否不足
+
+## GitHub 协作
+
+仓库已经补了最小 CI：
+- [ci.yml](/D:/UnrealGit/unreal-build/.github/workflows/ci.yml#L1)
+
+触发时机：
+- 提交到 `main`
+- 发起或更新 Pull Request
+
+CI 当前会执行：
+- `dotnet restore`
+- `dotnet build`
+- `npm ci`
+- `npm run build`
+
+同时仓库里已经加入：
+- PR 模板：[PULL_REQUEST_TEMPLATE.md](/D:/UnrealGit/unreal-build/.github/PULL_REQUEST_TEMPLATE.md#L1)
+- Bug 模板：[bug_report.md](/D:/UnrealGit/unreal-build/.github/ISSUE_TEMPLATE/bug_report.md#L1)
+- Feature 模板：[feature_request.md](/D:/UnrealGit/unreal-build/.github/ISSUE_TEMPLATE/feature_request.md#L1)
+
+如果你希望在 PR 中触发代码审查，直接在 PR 描述或评论里写：
+
+`@codex review`
