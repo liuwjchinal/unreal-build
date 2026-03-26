@@ -332,6 +332,24 @@ cd .\unreal-local-build
 - 后端使用 `--no-launch-profile`，避免监听地址被开发配置覆盖
 - 前端默认监听 `0.0.0.0:5173`
 
+### 生产模式一键启动
+
+如果你只需要启动后端并直接访问已经发布好的页面，可以执行：
+
+```powershell
+cd .\unreal-local-build
+.\start-prod.bat
+```
+
+脚本位置：
+- [start-prod.bat](/D:/UnrealGit/unreal-build/unreal-local-build/start-prod.bat#L1)
+
+脚本行为：
+- 检查前端依赖是否存在，不存在时自动执行 `npm install`
+- 检查 [backend/wwwroot](/D:/UnrealGit/unreal-build/unreal-local-build/backend/wwwroot) 是否已有前端静态产物，没有时自动执行 `npm run build`
+- 启动后端生产模式
+- 启动命令固定带 `--no-launch-profile`，避免监听地址被 `launchSettings.json` 覆盖
+
 ### 生产模式
 
 先构建前端：
