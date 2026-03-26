@@ -1,0 +1,13 @@
+.idea/
+.vs/
+*.zip
+tracy-ui-0.13.0/
+TracyUnrealPlugin/
+tracy-assets.html
+tracy-release.html
+unreal-local-build/backend/bin/
+unreal-local-build/backend/obj/
+unreal-local-build/backend/AppData/
+unreal-local-build/backend/wwwroot/
+unreal-local-build/frontend/node_modules/
+unreal-local-build/frontend/dist/
