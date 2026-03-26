@@ -10,13 +10,13 @@ echo.
 
 if not exist "%FRONTEND_DIR%\node_modules" (
     echo Frontend dependencies not found. Running npm install...
-    call npm --prefix "%FRONTEND_DIR%" install
+    call npm.cmd --prefix "%FRONTEND_DIR%" install
     if errorlevel 1 goto :fail
 )
 
 if not exist "%WWWROOT_DIR%\index.html" (
     echo Frontend static files not found. Running npm run build...
-    call npm --prefix "%FRONTEND_DIR%" run build
+    call npm.cmd --prefix "%FRONTEND_DIR%" run build
     if errorlevel 1 goto :fail
 )
 

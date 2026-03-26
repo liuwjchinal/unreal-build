@@ -329,6 +329,8 @@ cd .\unreal-local-build
 脚本行为：
 - 打开一个后端终端窗口
 - 打开一个前端终端窗口
+- 如果前端依赖不存在，自动执行 `npm install`
+- 如果 `node_modules\.bin\vite.cmd` 缺失，自动重新执行 `npm install`
 - 后端使用 `--no-launch-profile`，避免监听地址被开发配置覆盖
 - 前端默认监听 `0.0.0.0:5173`
 
