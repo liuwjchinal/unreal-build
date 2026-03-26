@@ -65,21 +65,30 @@ app.UseStaticFiles();
 
 var api = app.MapGroup("/api");
 
-api.MapGet("/health", () => Results.Ok(new
+api.MapGet("/health", () =>
 {
-    ok = true,
-    serverTimeUtc = DateTimeOffset.UtcNow,
-    serverUrl = appOptions.ServerUrl,
-    globalConcurrency = appOptions.GlobalConcurrency,
-    uatConcurrency = appOptions.UatConcurrency,
-    automationToolCleanupEnabled = appOptions.AutomationToolCleanupEnabled,
-    automationToolCleanupMode = appOptions.AutomationToolCleanupMode,
-    retentionDays = appOptions.BuildRetentionDays,
-    cleanupIntervalMinutes = appOptions.CleanupIntervalMinutes,
-    keepRecentSuccessfulBuildsPerProject = appOptions.KeepRecentSuccessfulBuildsPerProject,
-    maxBuildCacheSizeGb = appOptions.MaxBuildCacheSizeGb,
-    cleanupArchiveDirectories = appOptions.CleanupArchiveDirectories
-}));
+    var buildCacheSizeBytes = storagePaths.GetBuildCacheSizeBytes();
+    var buildCacheSizeGb = Math.Round(buildCacheSizeBytes / 1024d / 1024d / 1024d, 2);
+
+    return Results.Ok(new
+    {
+        ok = true,
+        serverTimeUtc = DateTimeOffset.UtcNow,
+        serverUrl = appOptions.ServerUrl,
+        globalConcurrency = appOptions.GlobalConcurrency,
+        uatConcurrency = appOptions.UatConcurrency,
+        automationToolCleanupEnabled = appOptions.AutomationToolCleanupEnabled,
+        automationToolCleanupMode = appOptions.AutomationToolCleanupMode,
+        retentionDays = appOptions.BuildRetentionDays,
+        cleanupIntervalMinutes = appOptions.CleanupIntervalMinutes,
+        keepRecentSuccessfulBuildsPerProject = appOptions.KeepRecentSuccessfulBuildsPerProject,
+        maxBuildCacheSizeGb = appOptions.MaxBuildCacheSizeGb,
+        cleanupArchiveDirectories = appOptions.CleanupArchiveDirectories,
+        buildCacheDirectory = storagePaths.BuildsRootPath,
+        buildCacheSizeBytes,
+        buildCacheSizeGb
+    });
+});
 
 api.MapGet("/projects", async (IDbContextFactory<BuildDbContext> dbFactory, CancellationToken cancellationToken) =>
 {

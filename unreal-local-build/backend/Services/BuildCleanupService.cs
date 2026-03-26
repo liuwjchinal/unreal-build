@@ -148,26 +148,9 @@ public sealed class BuildCleanupService(
 
     private long GetDirectorySize(string? path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
-        {
-            return 0;
-        }
-
         try
         {
-            return Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
-                .Select(filePath =>
-                {
-                    try
-                    {
-                        return new FileInfo(filePath).Length;
-                    }
-                    catch
-                    {
-                        return 0L;
-                    }
-                })
-                .Sum();
+            return StoragePaths.GetDirectorySize(path);
         }
         catch (Exception ex)
         {

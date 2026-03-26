@@ -98,13 +98,13 @@ dotnet build
   - 默认值：`3`
   - 设置为 `-1` 表示禁用这条规则
 - `App:MaxBuildCacheSizeGb`
-  - `backend/AppData/builds` 总缓存体积上限，超过后会按最旧构建先删
+  - `backend/AppData/builds` 总缓存体积上限，超过后会按最旧构建开始回收
   - 默认值：`20`
   - 设置为 `0` 表示禁用这条规则
 - `App:CleanupArchiveDirectories`
   - 是否连外部归档目录一起删除
   - 默认值：`false`
-  - 默认只清理 `backend/AppData/builds` 里的 zip、日志和中间文件，不动项目配置里的归档目录
+  - 默认只清理 `backend/AppData/builds` 里的 zip、日志和中间文件，不动项目配置中的归档目录
 - `App:AutomationToolCleanupEnabled`
   - 是否启用遗留 `AutomationTool` 清理
 - `App:AutomationToolCleanupMode`
@@ -115,9 +115,9 @@ dotnet build
 
 默认策略分三层：
 
-1. 超过 `14` 天的已完成构建缓存会被清理
+1. 超过 `14` 天的已完成构建缓存清理
 2. 每个项目只保留最近 `3` 个成功构建的本地缓存
-3. `backend/AppData/builds` 总缓存超过 `20 GB` 后，会按最旧构建开始回收
+3. `backend/AppData/builds` 总缓存超过 `20 GB` 后，按最旧构建回收
 
 默认清理范围：
 - 构建日志
@@ -128,32 +128,175 @@ dotnet build
 默认不会清理：
 - 项目配置中的外部归档目录
 
+健康检查接口 [http://localhost:5080/api/health](http://localhost:5080/api/health) 现在会额外返回：
+- `buildCacheDirectory`
+- `buildCacheSizeBytes`
+- `buildCacheSizeGb`
+
 如果你希望外部归档目录也一起回收，可以把：
 
 ```json
 "CleanupArchiveDirectories": true
 ```
 
-## 项目配置要求
+## 项目配置字段说明
 
-网页里新增项目时需要填写：
+### 项目配置页字段
 
-- 项目名称
-- SVN 工作副本路径
-- `.uproject` 路径
-- Unreal Engine 根目录
-- 归档根目录
+- `项目名称`
+  - 仅用于页面展示、日志标识和产物命名
+- `SVN 工作副本路径`
+  - 本地 SVN checkout 根目录
+  - 构建前会在这里执行 `svn update`
+- `.uproject 路径`
+  - 要打包的 Unreal 项目文件
+- `Engine 根目录`
+  - Unreal Engine 安装目录根路径
+  - 系统会自动拼出 `Engine\Build\BatchFiles\RunUAT.bat`
+- `归档根目录`
+  - Unreal `-archive` 输出目录的根目录
+  - 每次构建会在这里创建一个独立子目录
 - `GameTarget / ClientTarget / ServerTarget`
-- 允许的构建配置
-- 默认额外 UAT 参数
+  - 不同 Target 类型下实际传给 UAT 的 `-target=`
+- `允许的构建配置`
+  - 比如 `Development`、`Shipping`
+- `默认额外 UAT 参数`
+  - 当前项目默认追加到 `BuildCookRun` 命令末尾的参数
 
-系统会在保存项目和提交构建时检查：
-- 路径是否存在
-- `RunUAT.bat` 是否存在
-- Target 是否存在对应 `.Target.cs`
-- `svn info` 是否可执行
-- 工作副本是否有冲突、锁定或损坏
-- 归档目录是否可写
+### 发起构建字段
+
+- `ProjectId`
+  - 选中的项目 ID
+- `Revision`
+  - 期望更新到的 SVN 版本
+  - 可以填 `HEAD` 或指定版本号
+  - 构建成功更新后，系统会再读取实际工作副本版本号并写入记录
+- `TargetType`
+  - `Game / Client / Server`
+- `BuildConfiguration`
+  - 比如 `Development / Shipping`
+- `Clean`
+  - 是否附加 `-clean`
+- `Pak`
+  - 是否附加 `-pak`
+- `IoStore`
+  - 是否附加 `-iostore`
+  - 不勾选时会附加 `-skipiostore`
+- `ExtraUatArgs`
+  - 本次构建额外附加的 UAT 参数列表
+
+### 构建记录字段
+
+- `Revision`
+  - 页面显示的是实际工作副本版本号，例如 `SVN r12345`
+- `TargetName`
+  - 当前构建实际使用的 Target 名
+- `Status`
+  - `Queued / Running / Succeeded / Failed / Interrupted`
+- `CurrentPhase`
+  - 当前阶段，如 `Svn / Build / Cook / Stage / Package / Archive / Completed`
+- `ProgressPercent`
+  - 估算进度
+- `StatusMessage`
+  - 阶段描述
+- `QueuedAtUtc / StartedAtUtc / FinishedAtUtc`
+  - 排队、开始、结束时间
+- `DurationSeconds`
+  - 构建耗时秒数
+- `ErrorSummary`
+  - 失败摘要
+- `DownloadUrl`
+  - 只有构建成功且 zip 真正可读时才返回
+- `LogLineCount`
+  - 当前日志总行数
+- `SvnCommandPreview`
+  - 页面展示的 SVN 命令预览
+- `UatCommandPreview`
+  - 页面展示的 UAT 命令预览
+
+## 当前默认 UAT 参数
+
+系统固定会拼出这些基础参数：
+
+- `BuildCookRun`
+- `-build`
+- `-cook`
+- `-stage`
+- `-package`
+- `-archive`
+- `-archivedirectory=<归档目录>`
+- `-nop4`
+- `-unattended`
+
+不同 TargetType 会附加：
+
+- `Game`
+  - `-targetplatform=Win64`
+  - `-clientconfig=<BuildConfiguration>`
+  - `-target=<GameTarget>`
+- `Client`
+  - `-targetplatform=Win64`
+  - `-client`
+  - `-clientconfig=<BuildConfiguration>`
+  - `-target=<ClientTarget>`
+- `Server`
+  - `-server`
+  - `-noclient`
+  - `-servertargetplatform=Win64`
+  - `-serverconfig=<BuildConfiguration>`
+  - `-target=<ServerTarget>`
+
+按勾选附加：
+
+- `Clean = true`
+  - `-clean`
+- `Pak = true`
+  - `-pak`
+- `IoStore = true`
+  - `-iostore`
+- `IoStore = false`
+  - `-skipiostore`
+
+## 后续可扩展的 Unreal 构建参数
+
+这些参数目前可以通过 `额外 UAT 参数` 手动追加，后续也可以做成独立的勾选项：
+
+- `-prereqs`
+  - 打包时附带运行库安装程序
+- `-nodebuginfo`
+  - 不拷贝调试信息，减小产物体积
+- `-nocompileeditor`
+  - 跳过 Editor 相关编译
+- `-skipbuild`
+  - 跳过 Build，只执行 Cook/Stage/Package
+- `-skipcook`
+  - 跳过 Cook
+- `-skipstage`
+  - 跳过 Stage
+- `-skippak`
+  - 不生成 Pak
+- `-compressed`
+  - 对 Pak 启用压缩
+- `-utf8output`
+  - 让命令行输出尽量按 UTF-8 输出，便于日志展示
+- `-CrashReporter`
+  - 打包时带上 Crash Reporter
+- `-distribution`
+  - 分发包构建模式
+- `-manifests`
+  - 生成 manifests
+- `-createchunkinstall`
+  - 配合 chunk 安装包
+- `-map=<MapA+MapB>`
+  - 只 Cook 或打指定地图
+- `-CookCultures=zh-Hans,en`
+  - 限定 Cook 语言
+- `-archive`
+  - 当前系统已经固定启用，不需要重复填写
+
+建议：
+- 对团队常用参数，后续可以直接加到网页表单里
+- 对项目特有参数，继续放在 `默认额外 UAT 参数` 或本次构建的 `额外 UAT 参数`
 
 ## 启动方式
 

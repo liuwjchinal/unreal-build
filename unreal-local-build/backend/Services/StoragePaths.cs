@@ -34,6 +34,40 @@ public sealed class StoragePaths
         Directory.CreateDirectory(BuildsRootPath);
     }
 
+    public long GetBuildCacheSizeBytes()
+    {
+        return GetDirectorySize(BuildsRootPath);
+    }
+
+    public static long GetDirectorySize(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        {
+            return 0;
+        }
+
+        try
+        {
+            return Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+                .Select(filePath =>
+                {
+                    try
+                    {
+                        return new FileInfo(filePath).Length;
+                    }
+                    catch
+                    {
+                        return 0L;
+                    }
+                })
+                .Sum();
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     public string ResolveBuildRoot(Guid buildId) => Path.Combine(BuildsRootPath, buildId.ToString("N"));
 
     public string ResolveLogPath(Guid buildId) => Path.Combine(ResolveBuildRoot(buildId), "build.log");
