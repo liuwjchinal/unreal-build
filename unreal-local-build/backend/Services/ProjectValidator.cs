@@ -13,7 +13,13 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         Guid? existingProjectId,
         CancellationToken cancellationToken)
     {
-        return ValidateProjectCoreAsync(request, existingProjectId, includeSvnStatus: false, targetType: null, buildConfiguration: null, cancellationToken);
+        return ValidateProjectCoreAsync(
+            request,
+            existingProjectId,
+            includeSvnStatus: false,
+            targetType: null,
+            buildConfiguration: null,
+            cancellationToken);
     }
 
     public Task<Dictionary<string, string[]>> ValidateBuildRequestAsync(
@@ -38,8 +44,8 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             normalizedRequest,
             project.Id,
             includeSvnStatus: true,
-            request.TargetType,
-            request.BuildConfiguration,
+            targetType: request.TargetType,
+            buildConfiguration: request.BuildConfiguration,
             cancellationToken);
     }
 
@@ -69,9 +75,9 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             Add(nameof(request.UProjectPath), ".uproject 文件不存在。");
         }
 
-        var sourceDirectory = string.IsNullOrWhiteSpace(request.UProjectPath)
+        var projectDirectory = string.IsNullOrWhiteSpace(request.UProjectPath)
             ? null
-            : Path.Combine(Path.GetDirectoryName(request.UProjectPath) ?? string.Empty, "Source");
+            : Path.GetDirectoryName(request.UProjectPath);
 
         if (!string.IsNullOrWhiteSpace(request.EngineRootPath))
         {
@@ -110,11 +116,12 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         ValidateTargetField(nameof(request.ClientTarget), request.ClientTarget);
         ValidateTargetField(nameof(request.ServerTarget), request.ServerTarget);
 
-        if (Directory.Exists(sourceDirectory))
+        var targetSearchRoots = GetTargetSearchRoots(projectDirectory).ToList();
+        if (targetSearchRoots.Count > 0)
         {
-            ValidateTargetFile(nameof(request.GameTarget), request.GameTarget, sourceDirectory);
-            ValidateTargetFile(nameof(request.ClientTarget), request.ClientTarget, sourceDirectory);
-            ValidateTargetFile(nameof(request.ServerTarget), request.ServerTarget, sourceDirectory);
+            ValidateTargetFile(nameof(request.GameTarget), request.GameTarget, targetSearchRoots);
+            ValidateTargetFile(nameof(request.ClientTarget), request.ClientTarget, targetSearchRoots);
+            ValidateTargetFile(nameof(request.ServerTarget), request.ServerTarget, targetSearchRoots);
         }
 
         if (targetType.HasValue)
@@ -130,6 +137,18 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             if (string.IsNullOrWhiteSpace(targetName))
             {
                 Add(nameof(targetType), AppText.TargetNotConfigured(targetType.Value.ToString()));
+            }
+            else if (targetSearchRoots.Count > 0)
+            {
+                var requestedTargetFileName = $"{targetName.Trim()}.Target.cs";
+                var exists = targetSearchRoots.Any(root =>
+                    Directory.Exists(root) &&
+                    Directory.EnumerateFiles(root, requestedTargetFileName, SearchOption.AllDirectories).Any());
+
+                if (!exists)
+                {
+                    Add(nameof(targetType), $"当前项目不存在 Target {targetName.Trim()}。请在项目配置中改为实际 Target 名称。");
+                }
             }
         }
 
@@ -173,7 +192,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             }
         }
 
-        void ValidateTargetFile(string key, string? value, string sourceRoot)
+        void ValidateTargetFile(string key, string? value, IReadOnlyList<string> searchRoots)
         {
             if (string.IsNullOrWhiteSpace(value))
             {
@@ -181,11 +200,34 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             }
 
             var fileName = $"{value.Trim()}.Target.cs";
-            var exists = Directory.EnumerateFiles(sourceRoot, fileName, SearchOption.AllDirectories).Any();
+            var exists = searchRoots.Any(root =>
+                Directory.Exists(root) &&
+                Directory.EnumerateFiles(root, fileName, SearchOption.AllDirectories).Any());
+
             if (!exists)
             {
-                Add(key, $"未在 Source 目录下找到 {fileName}。");
+                Add(key, $"未找到 Target 文件 {fileName}。请确认项目配置中的 Target 名称与 .uproject 实际 Target 一致。");
             }
+        }
+    }
+
+    private static IEnumerable<string> GetTargetSearchRoots(string? projectDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(projectDirectory))
+        {
+            yield break;
+        }
+
+        var sourceDirectory = Path.Combine(projectDirectory, "Source");
+        if (Directory.Exists(sourceDirectory))
+        {
+            yield return sourceDirectory;
+        }
+
+        var intermediateSourceDirectory = Path.Combine(projectDirectory, "Intermediate", "Source");
+        if (Directory.Exists(intermediateSourceDirectory))
+        {
+            yield return intermediateSourceDirectory;
         }
     }
 
@@ -222,7 +264,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
 
         if (duplicateFingerprint.Count > 0)
         {
-            AddError(nameof(request.WorkingCopyPath), $"相同的工作副本 / uproject / Engine 组合已被项目 “{duplicateFingerprint[0]}” 使用。");
+            AddError(nameof(request.WorkingCopyPath), $"相同的工作副本 / uproject / Engine 组合已被项目“{duplicateFingerprint[0]}”使用。");
         }
 
         void AddError(string key, string message)
@@ -240,7 +282,10 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         }
     }
 
-    private async Task ValidateArchiveDirectoryAsync(string archiveRootPath, Dictionary<string, List<string>> errors, CancellationToken cancellationToken)
+    private async Task ValidateArchiveDirectoryAsync(
+        string archiveRootPath,
+        Dictionary<string, List<string>> errors,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(archiveRootPath))
         {
@@ -355,9 +400,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             }
         }
 
-        var statusLines = svnStatus.Output
-            .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToList();
+        var statusLines = ParseSvnStatusLines(svnStatus.Output);
 
         var lockedStatusLine = statusLines.FirstOrDefault(IsLockedSvnStatusLine);
         if (lockedStatusLine is not null)
@@ -377,9 +420,29 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
                 return;
             }
 
-            statusLines = svnStatus.Output
-                .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .ToList();
+            statusLines = ParseSvnStatusLines(svnStatus.Output);
+        }
+
+        var missingStatusLines = statusLines.Where(IsMissingSvnStatusLine).ToList();
+        if (missingStatusLines.Count > 0)
+        {
+            var repaired = await TryRepairMissingSvnItemsAsync(workingCopyPath, missingStatusLines, cancellationToken);
+            if (repaired)
+            {
+                svnStatus = await RunProcessAsync(
+                    "svn",
+                    ["status", workingCopyPath],
+                    workingCopyPath,
+                    cancellationToken);
+
+                if (svnStatus.ExitCode != 0)
+                {
+                    AddError(nameof(UpsertProjectRequest.WorkingCopyPath), "SVN 工作副本在自动修复缺失文件后，`svn status` 仍执行失败。");
+                    return;
+                }
+
+                statusLines = ParseSvnStatusLines(svnStatus.Output);
+            }
         }
 
         var invalidStatusLine = statusLines.FirstOrDefault(IsInvalidSvnStatusLine);
@@ -422,6 +485,96 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
     private static bool IsLockedSvnStatusLine(string line)
     {
         return !string.IsNullOrWhiteSpace(line) && line.Length > 2 && line[2] == 'L';
+    }
+
+    private static bool IsMissingSvnStatusLine(string line)
+    {
+        return !string.IsNullOrWhiteSpace(line) && line[0] == '!';
+    }
+
+    private static List<string> ParseSvnStatusLines(string output)
+    {
+        return output
+            .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToList();
+    }
+
+    private async Task<bool> TryRepairMissingSvnItemsAsync(
+        string workingCopyPath,
+        IReadOnlyList<string> missingStatusLines,
+        CancellationToken cancellationToken)
+    {
+        var missingPaths = missingStatusLines
+            .Select(TryExtractSvnStatusPath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => Path.GetFullPath(Path.Combine(workingCopyPath, path!)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (missingPaths.Count == 0)
+        {
+            return false;
+        }
+
+        var autoRepairCandidates = missingPaths
+            .Where(ShouldAutoRepairMissingPath)
+            .ToList();
+
+        if (autoRepairCandidates.Count == 0)
+        {
+            logger.LogInformation(
+                "Detected missing SVN items for {WorkingCopyPath}, but none matched auto-repair policy: {MissingPaths}",
+                workingCopyPath,
+                string.Join(", ", missingPaths));
+            return false;
+        }
+
+        logger.LogInformation(
+            "Attempting automatic repair for missing SVN items in {WorkingCopyPath}: {MissingPaths}",
+            workingCopyPath,
+            string.Join(", ", autoRepairCandidates));
+
+        foreach (var path in autoRepairCandidates)
+        {
+            await RunProcessAsync("svn", ["revert", path], workingCopyPath, cancellationToken);
+            await RunProcessAsync("svn", ["update", path], workingCopyPath, cancellationToken);
+        }
+
+        return true;
+    }
+
+    private static string? TryExtractSvnStatusPath(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line) || line.Length <= 8)
+        {
+            return null;
+        }
+
+        return line[8..].Trim();
+    }
+
+    private static bool ShouldAutoRepairMissingPath(string fullPath)
+    {
+        var normalizedPath = fullPath.Replace('/', '\\');
+        var fileName = Path.GetFileName(normalizedPath);
+        var extension = Path.GetExtension(normalizedPath);
+
+        if (normalizedPath.Contains("\\Binaries\\", StringComparison.OrdinalIgnoreCase) ||
+            normalizedPath.Contains("\\Intermediate\\", StringComparison.OrdinalIgnoreCase) ||
+            normalizedPath.Contains("\\Saved\\", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return extension.Equals(".pdb", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".obj", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".lib", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".dll", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".exp", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".ilk", StringComparison.OrdinalIgnoreCase) ||
+               fileName.EndsWith(".generated.h", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task TryCleanupWorkingCopyAsync(string workingCopyPath, CancellationToken cancellationToken)
