@@ -10,6 +10,44 @@ public sealed class BuildScheduleRunner(
     BuildOrchestrator orchestrator,
     ILogger<BuildScheduleRunner> logger)
 {
+    public async Task<BuildScheduleRunResultDto?> TryRunDueNowAsync(Guid scheduleId, CancellationToken cancellationToken)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+        var schedule = await db.Schedules
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == scheduleId, cancellationToken);
+
+        if (schedule is null || !schedule.Enabled)
+        {
+            return null;
+        }
+
+        var nowLocal = DateTime.Now;
+        var localDate = nowLocal.ToString("yyyy-MM-dd");
+        if (string.Equals(schedule.LastTriggeredLocalDate, localDate, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (!TimeOnly.TryParseExact(schedule.TimeOfDayLocal, "HH:mm", out var timeOfDay))
+        {
+            return null;
+        }
+
+        if (timeOfDay.Hour != nowLocal.Hour || timeOfDay.Minute != nowLocal.Minute)
+        {
+            return null;
+        }
+
+        logger.LogInformation(
+            "Immediately triggering due schedule after create/update. ScheduleId={ScheduleId}, Name={ScheduleName}, TimeOfDayLocal={TimeOfDayLocal}",
+            schedule.Id,
+            schedule.Name,
+            schedule.TimeOfDayLocal);
+
+        return await RunScheduledAsync(scheduleId, DateTimeOffset.UtcNow, cancellationToken);
+    }
+
     public Task<BuildScheduleRunResultDto?> RunNowAsync(Guid scheduleId, CancellationToken cancellationToken)
     {
         return RunInternalAsync(scheduleId, DateTimeOffset.UtcNow, persistScheduleDate: false, cancellationToken);

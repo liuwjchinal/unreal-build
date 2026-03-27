@@ -380,6 +380,7 @@ api.MapPost("/schedules", async (
     UpsertBuildScheduleRequest request,
     IDbContextFactory<BuildDbContext> dbFactory,
     BuildScheduleValidator validator,
+    BuildScheduleRunner runner,
     ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
@@ -394,6 +395,7 @@ api.MapPost("/schedules", async (
     db.Schedules.Add(schedule);
     await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "create schedule", cancellationToken);
     await db.Entry(schedule).Reference(item => item.Project).LoadAsync(cancellationToken);
+    await runner.TryRunDueNowAsync(schedule.Id, cancellationToken);
 
     return Results.Created($"/api/schedules/{schedule.Id}", schedule.ToDetailDto());
 });
@@ -403,6 +405,7 @@ api.MapPut("/schedules/{id:guid}", async (
     UpsertBuildScheduleRequest request,
     IDbContextFactory<BuildDbContext> dbFactory,
     BuildScheduleValidator validator,
+    BuildScheduleRunner runner,
     ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
@@ -425,6 +428,7 @@ api.MapPut("/schedules/{id:guid}", async (
     request.Apply(schedule);
     await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "update schedule", cancellationToken);
     await db.Entry(schedule).Reference(item => item.Project).LoadAsync(cancellationToken);
+    await runner.TryRunDueNowAsync(schedule.Id, cancellationToken);
 
     return Results.Ok(schedule.ToDetailDto());
 });
@@ -450,6 +454,7 @@ api.MapDelete("/schedules/{id:guid}", async (
 api.MapPost("/schedules/{id:guid}/toggle", async (
     Guid id,
     IDbContextFactory<BuildDbContext> dbFactory,
+    BuildScheduleRunner runner,
     ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
@@ -466,6 +471,11 @@ api.MapPost("/schedules/{id:guid}/toggle", async (
     schedule.Enabled = !schedule.Enabled;
     schedule.UpdatedAtUtc = DateTimeOffset.UtcNow;
     await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "toggle schedule", cancellationToken);
+    if (schedule.Enabled)
+    {
+        await runner.TryRunDueNowAsync(schedule.Id, cancellationToken);
+    }
+
     return Results.Ok(schedule.ToSummaryDto());
 });
 
