@@ -298,8 +298,17 @@ public sealed class BuildOrchestrator(
                 build.Revision = resolvedRevision;
             }
 
-            build.ArchiveDirectoryPath = storagePaths.ResolveArchiveDirectory(project, build, build.QueuedAtUtc);
+            build.ArchiveDirectoryPath = storagePaths.ResolveArchiveDirectoryWithFallback(project, build, build.QueuedAtUtc);
             build.ZipFilePath = storagePaths.ResolveZipPath(build, build.QueuedAtUtc);
+            if (string.IsNullOrWhiteSpace(project.ArchiveRootPath))
+            {
+                await writer.WriteLineAsync($"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}] ArchiveRootPath is empty. Falling back to local archive directory: {build.ArchiveDirectoryPath}");
+                logger.LogWarning(
+                    "Project {ProjectId} ({ProjectName}) has empty ArchiveRootPath. Falling back to build-local archive directory {ArchiveDirectoryPath}.",
+                    project.Id,
+                    project.Name,
+                    build.ArchiveDirectoryPath);
+            }
             build.UatCommandLine = BuildCommandFactory.CreateUatCommand(project, build).DisplayString;
             Directory.CreateDirectory(build.ArchiveDirectoryPath);
             await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "store resolved revision", cancellationToken);

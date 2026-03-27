@@ -85,6 +85,17 @@ public sealed class StoragePaths
         return Path.Combine(project.ArchiveRootPath, buildFolderName);
     }
 
+    public string ResolveArchiveDirectoryWithFallback(ProjectConfig project, BuildRecord build, DateTimeOffset timestampUtc)
+    {
+        var preferredRoot = project.ArchiveRootPath?.Trim();
+        if (!string.IsNullOrWhiteSpace(preferredRoot))
+        {
+            return ResolveArchiveDirectory(project, build, timestampUtc);
+        }
+
+        return Path.Combine(ResolveBuildRoot(build.Id), "archive");
+    }
+
     public static string FormatSvnRevision(string? revision)
     {
         var normalized = string.IsNullOrWhiteSpace(revision) ? "HEAD" : revision.Trim();

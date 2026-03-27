@@ -24,6 +24,11 @@ public static class BuildCommandFactory
 
     public static ProcessCommand CreateUatCommand(ProjectConfig project, BuildRecord build)
     {
+        if (string.IsNullOrWhiteSpace(build.ArchiveDirectoryPath))
+        {
+            throw new InvalidOperationException($"Build {build.Id} archive directory is empty.");
+        }
+
         var runUatPath = Path.Combine(project.EngineRootPath, "Engine", "Build", "BatchFiles", "RunUAT.bat");
         var arguments = new List<string>
         {
