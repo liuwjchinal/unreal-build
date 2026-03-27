@@ -484,7 +484,11 @@ api.MapGet("/builds/{id:guid}/download", async (
         return Results.Problem("产物仍在生成，请稍后重试。", statusCode: StatusCodes.Status409Conflict);
     }
 
-    return Results.File(build.ZipFilePath, "application/zip", Path.GetFileName(build.ZipFilePath));
+    return Results.File(
+        build.ZipFilePath,
+        "application/zip",
+        Path.GetFileName(build.ZipFilePath),
+        enableRangeProcessing: true);
 });
 
 api.MapGet("/events", async (

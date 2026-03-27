@@ -13,6 +13,23 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
+function getDownloadBase() {
+  if (API_BASE) {
+    return API_BASE
+  }
+
+  if (typeof window === 'undefined') {
+    return ''
+  }
+
+  const { protocol, hostname, port, origin } = window.location
+  if (port === '5173') {
+    return `${protocol}//${hostname}:5080`
+  }
+
+  return origin
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
@@ -111,7 +128,7 @@ export const api = {
     return new EventSource(`${API_BASE}/api/builds/${id}/events`)
   },
   toDownloadUrl(path?: string | null) {
-    return path ? `${API_BASE}${path}` : null
+    return path ? `${getDownloadBase()}${path}` : null
   },
 }
 
