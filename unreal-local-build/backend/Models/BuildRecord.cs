@@ -12,6 +12,10 @@ public sealed class BuildRecord
 
     public string Revision { get; set; } = "HEAD";
 
+    public BuildTriggerSource TriggerSource { get; set; } = BuildTriggerSource.Manual;
+
+    public Guid? ScheduleId { get; set; }
+
     public BuildTargetType TargetType { get; set; }
 
     public string TargetName { get; set; } = string.Empty;

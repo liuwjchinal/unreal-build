@@ -19,6 +19,8 @@ public sealed class BuildValidationException(Dictionary<string, string[]> errors
     public Dictionary<string, string[]> Errors { get; } = errors;
 }
 
+public sealed record BuildEnqueueMetadata(BuildTriggerSource TriggerSource, Guid? ScheduleId = null);
+
 public sealed class BuildOrchestrator(
     IDbContextFactory<BuildDbContext> dbFactory,
     StoragePaths storagePaths,
@@ -44,7 +46,15 @@ public sealed class BuildOrchestrator(
     private readonly TimeSpan _logFlushInterval = TimeSpan.FromMilliseconds(Math.Max(100, appOptions.LogEventFlushMilliseconds));
     private readonly TimeSpan _progressPersistInterval = TimeSpan.FromMilliseconds(750);
 
-    public async Task<BuildRecord> EnqueueBuildAsync(QueueBuildRequest request, CancellationToken cancellationToken)
+    public Task<BuildRecord> EnqueueBuildAsync(QueueBuildRequest request, CancellationToken cancellationToken)
+    {
+        return EnqueueBuildAsync(request, null, cancellationToken);
+    }
+
+    public async Task<BuildRecord> EnqueueBuildAsync(
+        QueueBuildRequest request,
+        BuildEnqueueMetadata? metadata,
+        CancellationToken cancellationToken)
     {
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
         await automationToolJanitor.CleanupIfSystemIdleAsync("Build enqueue preflight", cancellationToken);
@@ -75,6 +85,8 @@ public sealed class BuildOrchestrator(
             ProjectId = project.Id,
             Project = project,
             Revision = BuildCommandFactory.NormalizeRevision(request.Revision),
+            TriggerSource = metadata?.TriggerSource ?? BuildTriggerSource.Manual,
+            ScheduleId = metadata?.ScheduleId,
             TargetType = request.TargetType,
             TargetName = BuildCommandFactory.ResolveTargetName(project, request.TargetType),
             BuildConfiguration = request.BuildConfiguration.Trim(),
@@ -804,6 +816,8 @@ public sealed class BuildOrchestrator(
             {
                 buildId = build.Id,
                 projectId = build.ProjectId,
+                triggerSource = build.TriggerSource,
+                scheduleId = build.ScheduleId,
                 status = build.Status,
                 phase = build.CurrentPhase,
                 progressPercent = build.ProgressPercent,

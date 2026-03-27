@@ -30,3 +30,15 @@ public enum BuildTargetType
     Client,
     Server
 }
+
+public enum BuildTriggerSource
+{
+    Manual,
+    Schedule
+}
+
+public enum BuildScheduleScopeType
+{
+    SingleProject,
+    AllProjects
+}

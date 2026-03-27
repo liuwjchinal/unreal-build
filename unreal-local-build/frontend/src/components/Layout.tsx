@@ -13,6 +13,9 @@ export function Layout({ children }: PropsWithChildren) {
           <NavLink to="/builds" className={({ isActive }) => (isActive ? 'active' : undefined)}>
             构建中心
           </NavLink>
+          <NavLink to="/schedules" className={({ isActive }) => (isActive ? 'active' : undefined)}>
+            定时任务
+          </NavLink>
           <NavLink to="/projects" className={({ isActive }) => (isActive ? 'active' : undefined)}>
             项目配置
           </NavLink>

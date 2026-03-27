@@ -38,8 +38,13 @@ builder.Services.AddSingleton<AutomationToolJanitor>();
 builder.Services.AddSingleton<ProjectValidator>();
 builder.Services.AddSingleton<BuildLogReader>();
 builder.Services.AddSingleton<BuildLogAnalyzer>();
+builder.Services.AddSingleton<BuildScheduleRuntimeState>();
+builder.Services.AddSingleton<BuildScheduleValidator>();
+builder.Services.AddSingleton<BuildScheduleRunner>();
+builder.Services.AddSingleton<BuildScheduleService>();
 builder.Services.AddSingleton<BuildOrchestrator>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<BuildOrchestrator>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<BuildScheduleService>());
 builder.Services.AddHostedService<BuildCleanupService>();
 builder.Services.AddDbContextFactory<BuildDbContext>(options =>
 {
@@ -66,7 +71,7 @@ app.UseStaticFiles();
 
 var api = app.MapGroup("/api");
 
-api.MapGet("/health", () =>
+api.MapGet("/health", (BuildScheduleRuntimeState scheduleRuntimeState) =>
 {
     var buildCacheSizeBytes = storagePaths.GetBuildCacheSizeBytes();
     var buildCacheSizeGb = Math.Round(buildCacheSizeBytes / 1024d / 1024d / 1024d, 2);
@@ -85,6 +90,10 @@ api.MapGet("/health", () =>
         keepRecentSuccessfulBuildsPerProject = appOptions.KeepRecentSuccessfulBuildsPerProject,
         maxBuildCacheSizeGb = appOptions.MaxBuildCacheSizeGb,
         cleanupArchiveDirectories = appOptions.CleanupArchiveDirectories,
+        scheduleServiceEnabled = appOptions.ScheduleServiceEnabled,
+        scheduleScanIntervalSeconds = appOptions.ScheduleScanIntervalSeconds,
+        enabledScheduleCount = scheduleRuntimeState.EnabledScheduleCount,
+        lastScheduleTickUtc = scheduleRuntimeState.LastScheduleTickUtc,
         buildCacheDirectory = storagePaths.BuildsRootPath,
         buildCacheSizeBytes,
         buildCacheSizeGb
@@ -341,6 +350,132 @@ api.MapDelete("/projects/{id:guid}", async (Guid id, IDbContextFactory<BuildDbCo
     db.Projects.Remove(project);
     await db.SaveChangesAsync(cancellationToken);
     return Results.NoContent();
+});
+
+api.MapGet("/schedules", async (IDbContextFactory<BuildDbContext> dbFactory, CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var schedules = await db.Schedules
+        .AsNoTracking()
+        .Include(item => item.Project)
+        .OrderBy(item => item.TimeOfDayLocal)
+        .ThenBy(item => item.Name)
+        .ToListAsync(cancellationToken);
+
+    return Results.Ok(schedules.Select(item => item.ToSummaryDto()));
+});
+
+api.MapGet("/schedules/{id:guid}", async (Guid id, IDbContextFactory<BuildDbContext> dbFactory, CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var schedule = await db.Schedules
+        .AsNoTracking()
+        .Include(item => item.Project)
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    return schedule is null ? Results.NotFound() : Results.Ok(schedule.ToDetailDto());
+});
+
+api.MapPost("/schedules", async (
+    UpsertBuildScheduleRequest request,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    BuildScheduleValidator validator,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    var validationErrors = await validator.ValidateAsync(request, null, cancellationToken);
+    if (validationErrors.Count > 0)
+    {
+        return Results.ValidationProblem(validationErrors);
+    }
+
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var schedule = request.ToEntity();
+    db.Schedules.Add(schedule);
+    await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "create schedule", cancellationToken);
+    await db.Entry(schedule).Reference(item => item.Project).LoadAsync(cancellationToken);
+
+    return Results.Created($"/api/schedules/{schedule.Id}", schedule.ToDetailDto());
+});
+
+api.MapPut("/schedules/{id:guid}", async (
+    Guid id,
+    UpsertBuildScheduleRequest request,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    BuildScheduleValidator validator,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    var validationErrors = await validator.ValidateAsync(request, id, cancellationToken);
+    if (validationErrors.Count > 0)
+    {
+        return Results.ValidationProblem(validationErrors);
+    }
+
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var schedule = await db.Schedules
+        .Include(item => item.Project)
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    if (schedule is null)
+    {
+        return Results.NotFound();
+    }
+
+    request.Apply(schedule);
+    await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "update schedule", cancellationToken);
+    await db.Entry(schedule).Reference(item => item.Project).LoadAsync(cancellationToken);
+
+    return Results.Ok(schedule.ToDetailDto());
+});
+
+api.MapDelete("/schedules/{id:guid}", async (
+    Guid id,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var schedule = await db.Schedules.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+    if (schedule is null)
+    {
+        return Results.NotFound();
+    }
+
+    db.Schedules.Remove(schedule);
+    await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "delete schedule", cancellationToken);
+    return Results.NoContent();
+});
+
+api.MapPost("/schedules/{id:guid}/toggle", async (
+    Guid id,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var schedule = await db.Schedules
+        .Include(item => item.Project)
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    if (schedule is null)
+    {
+        return Results.NotFound();
+    }
+
+    schedule.Enabled = !schedule.Enabled;
+    schedule.UpdatedAtUtc = DateTimeOffset.UtcNow;
+    await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "toggle schedule", cancellationToken);
+    return Results.Ok(schedule.ToSummaryDto());
+});
+
+api.MapPost("/schedules/{id:guid}/run-now", async (
+    Guid id,
+    BuildScheduleRunner runner,
+    CancellationToken cancellationToken) =>
+{
+    var result = await runner.RunNowAsync(id, cancellationToken);
+    return result is null ? Results.NotFound() : Results.Ok(result);
 });
 
 api.MapPost("/builds", async (

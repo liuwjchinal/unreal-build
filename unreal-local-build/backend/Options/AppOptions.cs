@@ -38,5 +38,9 @@ public sealed class AppOptions
 
     public bool CleanupArchiveDirectories { get; init; } = false;
 
+    public bool ScheduleServiceEnabled { get; init; } = true;
+
+    public int ScheduleScanIntervalSeconds { get; init; } = 30;
+
     public string FrontendDevOrigin { get; init; } = "http://localhost:5173";
 }

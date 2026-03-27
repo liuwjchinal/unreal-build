@@ -3,6 +3,7 @@ import { Layout } from './components/Layout'
 import { BuildsPage } from './pages/BuildsPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { BuildDetailPage } from './pages/BuildDetailPage'
+import { SchedulesPage } from './pages/SchedulesPage'
 
 export function App() {
   return (
@@ -10,6 +11,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/builds" replace />} />
         <Route path="/projects" element={<ProjectsPage />} />
+        <Route path="/schedules" element={<SchedulesPage />} />
         <Route path="/builds" element={<BuildsPage />} />
         <Route path="/builds/:buildId" element={<BuildDetailPage />} />
       </Routes>

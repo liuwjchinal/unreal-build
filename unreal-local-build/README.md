@@ -1,5 +1,10 @@
 # Unreal Local Build
 
+> 这份 README 的历史内容里仍有部分旧编码残留。定时构建任务的最新说明以本节和下面的专题文档为准。
+>
+> - 定时构建说明：[build-schedules.md](/D:/UnrealGit/unreal-build/unreal-local-build/docs/build-schedules.md#L1)
+> - Unreal 打包源码流程：[unreal-engine-uat-build-flow.md](/D:/UnrealGit/unreal-build/unreal-local-build/docs/unreal-engine-uat-build-flow.md#L1)
+
 轻量级 Unreal Engine Windows 本地打包 Web 工具。
 
 补充文档：

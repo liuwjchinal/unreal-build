@@ -2,11 +2,15 @@ import type {
   BuildDetailDto,
   BuildEventEnvelope,
   BuildLogSnapshotDto,
+  BuildScheduleDetailDto,
+  BuildScheduleRunResultDto,
+  BuildScheduleSummaryDto,
   BuildSummaryDto,
   ImportProjectsResult,
   ProjectConfigDto,
   ProjectSummaryDto,
   QueueBuildRequest,
+  UpsertBuildScheduleRequest,
   UpsertProjectRequest,
   ValidationProblemDetails,
 } from '../types/api'
@@ -91,6 +95,39 @@ export const api = {
   deleteProject(id: string) {
     return request<void>(`/api/projects/${id}`, {
       method: 'DELETE',
+    })
+  },
+  getSchedules() {
+    return request<BuildScheduleSummaryDto[]>('/api/schedules')
+  },
+  getSchedule(id: string) {
+    return request<BuildScheduleDetailDto>(`/api/schedules/${id}`)
+  },
+  createSchedule(payload: UpsertBuildScheduleRequest) {
+    return request<BuildScheduleDetailDto>('/api/schedules', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+  updateSchedule(id: string, payload: UpsertBuildScheduleRequest) {
+    return request<BuildScheduleDetailDto>(`/api/schedules/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
+  },
+  deleteSchedule(id: string) {
+    return request<void>(`/api/schedules/${id}`, {
+      method: 'DELETE',
+    })
+  },
+  toggleSchedule(id: string) {
+    return request<BuildScheduleSummaryDto>(`/api/schedules/${id}/toggle`, {
+      method: 'POST',
+    })
+  },
+  runScheduleNow(id: string) {
+    return request<BuildScheduleRunResultDto>(`/api/schedules/${id}/run-now`, {
+      method: 'POST',
     })
   },
   getBuilds(projectId?: string) {

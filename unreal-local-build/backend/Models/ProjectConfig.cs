@@ -32,5 +32,7 @@ public sealed class ProjectConfig
 
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 
+    public List<BuildSchedule> Schedules { get; set; } = new();
+
     public List<BuildRecord> Builds { get; set; } = new();
 }

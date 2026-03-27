@@ -15,6 +15,10 @@ export type BuildPhase =
 
 export type BuildTargetType = 'Game' | 'Client' | 'Server'
 
+export type BuildTriggerSource = 'Manual' | 'Schedule'
+
+export type BuildScheduleScopeType = 'SingleProject' | 'AllProjects'
+
 export interface ProjectSummaryDto {
   id: string
   projectKey: string
@@ -93,6 +97,8 @@ export interface BuildSummaryDto {
   projectId: string
   projectName: string
   revision: string
+  triggerSource: BuildTriggerSource
+  scheduleId?: string | null
   targetType: BuildTargetType
   targetName: string
   buildConfiguration: string
@@ -124,6 +130,53 @@ export interface BuildLogSnapshotDto {
   includedLines: number
   totalLines: number
   truncated: boolean
+}
+
+export interface UpsertBuildScheduleRequest {
+  name: string
+  enabled: boolean
+  scopeType: BuildScheduleScopeType
+  projectId?: string | null
+  timeOfDayLocal: string
+  targetType: BuildTargetType
+  buildConfiguration: string
+  clean: boolean
+  pak: boolean
+  ioStore: boolean
+  extraUatArgs: string[]
+}
+
+export interface BuildScheduleSummaryDto {
+  id: string
+  name: string
+  enabled: boolean
+  scopeType: BuildScheduleScopeType
+  projectId?: string | null
+  projectName?: string | null
+  timeOfDayLocal: string
+  targetType: BuildTargetType
+  buildConfiguration: string
+  clean: boolean
+  pak: boolean
+  ioStore: boolean
+  lastTriggeredAtUtc?: string | null
+  lastTriggeredBuildCount: number
+  lastTriggerMessage?: string | null
+  createdAtUtc: string
+  updatedAtUtc: string
+}
+
+export interface BuildScheduleDetailDto extends BuildScheduleSummaryDto {
+  extraUatArgs: string[]
+  lastTriggeredLocalDate?: string | null
+}
+
+export interface BuildScheduleRunResultDto {
+  scheduleId: string
+  requestedCount: number
+  enqueuedCount: number
+  failedCount: number
+  message: string
 }
 
 export interface ValidationProblemDetails {

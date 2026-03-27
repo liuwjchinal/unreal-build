@@ -12,6 +12,8 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
 
     public DbSet<BuildRecord> Builds => Set<BuildRecord>();
 
+    public DbSet<BuildSchedule> Schedules => Set<BuildSchedule>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         var stringListConverter = new ValueConverter<List<string>, string>(
@@ -56,6 +58,7 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.Property(build => build.Status).HasConversion<string>();
             entity.Property(build => build.CurrentPhase).HasConversion<string>();
             entity.Property(build => build.TargetType).HasConversion<string>();
+            entity.Property(build => build.TriggerSource).HasConversion<string>();
             entity.Property(build => build.LogFilePath).HasMaxLength(1000);
             entity.Property(build => build.BuildRootPath).HasMaxLength(1000);
             entity.Property(build => build.ArchiveDirectoryPath).HasMaxLength(1000);
@@ -78,6 +81,30 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.HasIndex(build => new { build.ProjectId, build.QueuedAtUtc });
             entity.HasIndex(build => build.Status);
             entity.HasIndex(build => build.FinishedAtUtc);
+            entity.HasIndex(build => build.ScheduleId);
+        });
+
+        modelBuilder.Entity<BuildSchedule>(entity =>
+        {
+            entity.ToTable("Schedules");
+            entity.HasKey(schedule => schedule.Id);
+            entity.Property(schedule => schedule.Name).HasMaxLength(200);
+            entity.Property(schedule => schedule.ScopeType).HasConversion<string>();
+            entity.Property(schedule => schedule.TimeOfDayLocal).HasMaxLength(5);
+            entity.Property(schedule => schedule.TargetType).HasConversion<string>();
+            entity.Property(schedule => schedule.BuildConfiguration).HasMaxLength(100);
+            entity.Property(schedule => schedule.ExtraUatArgs)
+                .HasConversion(stringListConverter)
+                .Metadata.SetValueComparer(stringListComparer);
+            entity.Property(schedule => schedule.LastTriggeredLocalDate).HasMaxLength(10);
+            entity.Property(schedule => schedule.LastTriggerMessage).HasMaxLength(1000);
+            entity.HasOne(schedule => schedule.Project)
+                .WithMany(project => project.Schedules)
+                .HasForeignKey(schedule => schedule.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(schedule => schedule.Enabled);
+            entity.HasIndex(schedule => new { schedule.Enabled, schedule.TimeOfDayLocal });
+            entity.HasIndex(schedule => schedule.ProjectId);
         });
     }
 }
