@@ -346,6 +346,7 @@ api.MapDelete("/projects/{id:guid}", async (Guid id, IDbContextFactory<BuildDbCo
 api.MapPost("/builds", async (
     QueueBuildRequest request,
     BuildOrchestrator orchestrator,
+    ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
     try
@@ -360,6 +361,14 @@ api.MapPost("/builds", async (
     catch (BuildValidationException ex)
     {
         return Results.ValidationProblem(ex.Errors);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Failed to enqueue build for project {ProjectId}.", request.ProjectId);
+        return Results.Problem(
+            title: "构建入队失败",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status500InternalServerError);
     }
 });
 

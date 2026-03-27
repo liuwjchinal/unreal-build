@@ -63,7 +63,10 @@ public sealed class BuildOrchestrator(
         var buildId = Guid.NewGuid();
         var buildRoot = storagePaths.ResolveBuildRoot(buildId);
         Directory.CreateDirectory(buildRoot);
-        Directory.CreateDirectory(project.ArchiveRootPath);
+        if (!string.IsNullOrWhiteSpace(project.ArchiveRootPath))
+        {
+            Directory.CreateDirectory(project.ArchiveRootPath);
+        }
 
         var now = DateTimeOffset.UtcNow;
         var build = new BuildRecord
@@ -92,9 +95,8 @@ public sealed class BuildOrchestrator(
         };
 
         var svnCommand = BuildCommandFactory.CreateSvnCommand(project, build);
-        var uatCommand = BuildCommandFactory.CreateUatCommand(project, build);
         build.SvnCommandLine = svnCommand.DisplayString;
-        build.UatCommandLine = uatCommand.DisplayString;
+        build.UatCommandLine = BuildCommandFactory.CreateUatPreview(build);
 
         db.Builds.Add(build);
         await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "enqueue build", cancellationToken);
