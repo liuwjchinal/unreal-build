@@ -8,6 +8,7 @@ public sealed record UpsertBuildScheduleRequest(
     BuildScheduleScopeType ScopeType,
     Guid? ProjectId,
     string TimeOfDayLocal,
+    BuildPlatform Platform,
     BuildTargetType TargetType,
     string BuildConfiguration,
     bool Clean,
@@ -23,6 +24,7 @@ public sealed record BuildScheduleSummaryDto(
     Guid? ProjectId,
     string? ProjectName,
     string TimeOfDayLocal,
+    BuildPlatform Platform,
     BuildTargetType TargetType,
     string BuildConfiguration,
     bool Clean,
@@ -42,6 +44,7 @@ public sealed record BuildScheduleDetailDto(
     Guid? ProjectId,
     string? ProjectName,
     string TimeOfDayLocal,
+    BuildPlatform Platform,
     BuildTargetType TargetType,
     string BuildConfiguration,
     bool Clean,
@@ -80,6 +83,7 @@ public static class ScheduleContractMappings
         schedule.ScopeType = request.ScopeType;
         schedule.ProjectId = request.ScopeType == BuildScheduleScopeType.SingleProject ? request.ProjectId : null;
         schedule.TimeOfDayLocal = request.TimeOfDayLocal.Trim();
+        schedule.Platform = request.Platform;
         schedule.TargetType = request.TargetType;
         schedule.BuildConfiguration = request.BuildConfiguration.Trim();
         schedule.Clean = request.Clean;
@@ -99,6 +103,7 @@ public static class ScheduleContractMappings
             schedule.ProjectId,
             schedule.Project?.Name,
             schedule.TimeOfDayLocal,
+            schedule.Platform,
             schedule.TargetType,
             schedule.BuildConfiguration,
             schedule.Clean,
@@ -121,6 +126,7 @@ public static class ScheduleContractMappings
             schedule.ProjectId,
             schedule.Project?.Name,
             schedule.TimeOfDayLocal,
+            schedule.Platform,
             schedule.TargetType,
             schedule.BuildConfiguration,
             schedule.Clean,

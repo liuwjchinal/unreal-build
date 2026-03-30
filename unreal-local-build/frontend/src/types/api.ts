@@ -13,6 +13,8 @@ export type BuildPhase =
   | 'Failed'
   | 'Interrupted'
 
+export type BuildPlatform = 'Windows' | 'Android'
+
 export type BuildTargetType = 'Game' | 'Client' | 'Server'
 
 export type BuildTriggerSource = 'Manual' | 'Schedule'
@@ -30,6 +32,8 @@ export interface ProjectSummaryDto {
   gameTarget?: string | null
   clientTarget?: string | null
   serverTarget?: string | null
+  androidEnabled?: boolean | null
+  androidTextureFlavor?: string | null
   allowedBuildConfigurations: string[]
   defaultExtraUatArgs: string[]
   createdAtUtc: string
@@ -47,6 +51,8 @@ export interface ProjectConfigDto {
   gameTarget?: string | null
   clientTarget?: string | null
   serverTarget?: string | null
+  androidEnabled: boolean
+  androidTextureFlavor: string
   allowedBuildConfigurations: string[]
   defaultExtraUatArgs: string[]
   createdAtUtc: string
@@ -63,6 +69,8 @@ export interface UpsertProjectRequest {
   gameTarget?: string | null
   clientTarget?: string | null
   serverTarget?: string | null
+  androidEnabled: boolean
+  androidTextureFlavor: string
   allowedBuildConfigurations: string[]
   defaultExtraUatArgs: string[]
 }
@@ -84,6 +92,7 @@ export interface ImportProjectsResult {
 export interface QueueBuildRequest {
   projectId: string
   revision: string
+  platform: BuildPlatform
   targetType: BuildTargetType
   buildConfiguration: string
   clean: boolean
@@ -99,6 +108,7 @@ export interface BuildSummaryDto {
   revision: string
   triggerSource: BuildTriggerSource
   scheduleId?: string | null
+  platform: BuildPlatform
   targetType: BuildTargetType
   targetName: string
   buildConfiguration: string
@@ -138,6 +148,7 @@ export interface UpsertBuildScheduleRequest {
   scopeType: BuildScheduleScopeType
   projectId?: string | null
   timeOfDayLocal: string
+  platform: BuildPlatform
   targetType: BuildTargetType
   buildConfiguration: string
   clean: boolean
@@ -154,6 +165,7 @@ export interface BuildScheduleSummaryDto {
   projectId?: string | null
   projectName?: string | null
   timeOfDayLocal: string
+  platform: BuildPlatform
   targetType: BuildTargetType
   buildConfiguration: string
   clean: boolean

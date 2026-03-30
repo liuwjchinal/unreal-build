@@ -17,6 +17,8 @@ interface ProjectFormState {
   gameTarget: string
   clientTarget: string
   serverTarget: string
+  androidEnabled: boolean
+  androidTextureFlavor: string
   allowedBuildConfigurations: string
   defaultExtraUatArgs: string
 }
@@ -30,6 +32,8 @@ const EMPTY_FORM: ProjectFormState = {
   gameTarget: '',
   clientTarget: '',
   serverTarget: '',
+  androidEnabled: true,
+  androidTextureFlavor: 'ASTC',
   allowedBuildConfigurations: 'Development\nShipping',
   defaultExtraUatArgs: '',
 }
@@ -78,6 +82,8 @@ export function ProjectsPage() {
       gameTarget: project.gameTarget ?? '',
       clientTarget: project.clientTarget ?? '',
       serverTarget: project.serverTarget ?? '',
+      androidEnabled: project.androidEnabled,
+      androidTextureFlavor: project.androidTextureFlavor || 'ASTC',
       allowedBuildConfigurations: joinList(project.allowedBuildConfigurations),
       defaultExtraUatArgs: joinList(project.defaultExtraUatArgs),
     })
@@ -114,6 +120,8 @@ export function ProjectsPage() {
       gameTarget: form.gameTarget || null,
       clientTarget: form.clientTarget || null,
       serverTarget: form.serverTarget || null,
+      androidEnabled: form.androidEnabled,
+      androidTextureFlavor: form.androidTextureFlavor,
       allowedBuildConfigurations: parseTextAreaList(form.allowedBuildConfigurations),
       defaultExtraUatArgs: parseTextAreaList(form.defaultExtraUatArgs),
     }
@@ -180,7 +188,7 @@ export function ProjectsPage() {
       const text = await file.text()
       const payload = JSON.parse(text) as UpsertProjectRequest[]
       const result = await api.importProjects(payload)
-      setNotice(`导入完成：新增 ${result.created} 项，更新 ${result.updated} 项，冲突 ${result.conflicts} 项。`)
+      setNotice(`导入完成：新建 ${result.created} 项，更新 ${result.updated} 项，冲突 ${result.conflicts} 项。`)
       setImportConflicts(result.conflictItems)
       await loadProjects()
     } catch (err) {
@@ -251,6 +259,24 @@ export function ProjectsPage() {
             Server Target
             <input value={form.serverTarget} onChange={(event) => setForm({ ...form, serverTarget: event.target.value })} />
           </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={form.androidEnabled}
+              onChange={(event) => setForm({ ...form, androidEnabled: event.target.checked })}
+            />
+            启用 Android 构建
+          </label>
+          <label>
+            Android Texture Flavor
+            <select
+              value={form.androidTextureFlavor}
+              onChange={(event) => setForm({ ...form, androidTextureFlavor: event.target.value })}
+              disabled={!form.androidEnabled}
+            >
+              <option value="ASTC">ASTC</option>
+            </select>
+          </label>
           <label className="span-two">
             允许的构建配置
             <textarea
@@ -267,6 +293,10 @@ export function ProjectsPage() {
               onChange={(event) => setForm({ ...form, defaultExtraUatArgs: event.target.value })}
             />
           </label>
+
+          <div className="span-two">
+            <p className="muted-text">Android 第一版固定为 ASTC 测试包，只支持 Game Target。</p>
+          </div>
 
           <div className="form-actions span-two">
             <button type="submit" className="primary-button" disabled={submitting}>
@@ -359,6 +389,10 @@ export function ProjectsPage() {
                   <dd>
                     Game={project.gameTarget || '-'} / Client={project.clientTarget || '-'} / Server={project.serverTarget || '-'}
                   </dd>
+                </div>
+                <div>
+                  <dt>Android</dt>
+                  <dd>{project.androidEnabled ? `已启用 / ${project.androidTextureFlavor}` : '未启用'}</dd>
                 </div>
                 <div>
                   <dt>配置</dt>

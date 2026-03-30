@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
-import { formatUtc, joinList, parseTextAreaList } from '../components/formatters'
+import { formatPlatform, formatUtc, joinList, parseTextAreaList } from '../components/formatters'
 import type {
+  BuildPlatform,
   BuildScheduleDetailDto,
   BuildScheduleScopeType,
   BuildScheduleSummaryDto,
@@ -16,6 +17,7 @@ interface ScheduleFormState {
   scopeType: BuildScheduleScopeType
   projectId: string
   timeOfDayLocal: string
+  platform: BuildPlatform
   targetType: BuildTargetType
   buildConfiguration: string
   clean: boolean
@@ -30,6 +32,7 @@ const EMPTY_FORM: ScheduleFormState = {
   scopeType: 'SingleProject',
   projectId: '',
   timeOfDayLocal: '12:00',
+  platform: 'Windows',
   targetType: 'Game',
   buildConfiguration: 'Development',
   clean: false,
@@ -55,13 +58,33 @@ export function SchedulesPage() {
     [form.projectId, projects],
   )
 
+  const availablePlatforms = useMemo<BuildPlatform[]>(() => {
+    if (form.scopeType === 'AllProjects') {
+      return ['Windows', 'Android']
+    }
+
+    if (!selectedProject) {
+      return ['Windows']
+    }
+
+    return selectedProject.androidEnabled ? ['Windows', 'Android'] : ['Windows']
+  }, [form.scopeType, selectedProject])
+
+  const availableTargetTypes = useMemo<BuildTargetType[]>(
+    () => (form.platform === 'Android' ? ['Game'] : ['Game', 'Client', 'Server']),
+    [form.platform],
+  )
+
   const availableBuildConfigurations = useMemo(() => {
     if (form.scopeType === 'SingleProject' && selectedProject) {
       return selectedProject.allowedBuildConfigurations
     }
 
     return Array.from(new Set(projects.flatMap((project) => project.allowedBuildConfigurations))).concat(
-      ['Development', 'Shipping'].filter((item, index, list) => !projects.some((project) => project.allowedBuildConfigurations.includes(item)) && list.indexOf(item) === index),
+      ['Development', 'Shipping'].filter(
+        (item, index, list) =>
+          !projects.some((project) => project.allowedBuildConfigurations.includes(item)) && list.indexOf(item) === index,
+      ),
     )
   }, [form.scopeType, projects, selectedProject])
 
@@ -76,6 +99,18 @@ export function SchedulesPage() {
 
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (!availablePlatforms.includes(form.platform)) {
+      setForm((current) => ({ ...current, platform: 'Windows' }))
+    }
+  }, [availablePlatforms, form.platform])
+
+  useEffect(() => {
+    if (!availableTargetTypes.includes(form.targetType)) {
+      setForm((current) => ({ ...current, targetType: 'Game' }))
+    }
+  }, [availableTargetTypes, form.targetType])
 
   useEffect(() => {
     if (form.scopeType !== 'SingleProject' || !selectedProject) {
@@ -131,6 +166,7 @@ export function SchedulesPage() {
       scopeType: schedule.scopeType,
       projectId: schedule.projectId ?? '',
       timeOfDayLocal: schedule.timeOfDayLocal,
+      platform: schedule.platform,
       targetType: schedule.targetType,
       buildConfiguration: schedule.buildConfiguration,
       clean: schedule.clean,
@@ -166,6 +202,7 @@ export function SchedulesPage() {
       scopeType: form.scopeType,
       projectId: form.scopeType === 'SingleProject' ? form.projectId || null : null,
       timeOfDayLocal: form.timeOfDayLocal,
+      platform: form.platform,
       targetType: form.targetType,
       buildConfiguration: form.buildConfiguration,
       clean: form.clean,
@@ -300,11 +337,23 @@ export function SchedulesPage() {
             </select>
           </label>
           <label>
+            平台
+            <select value={form.platform} onChange={(event) => setForm({ ...form, platform: event.target.value as BuildPlatform })}>
+              {availablePlatforms.map((item) => (
+                <option key={item} value={item}>
+                  {formatPlatform(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
             Target 类型
             <select value={form.targetType} onChange={(event) => setForm({ ...form, targetType: event.target.value as BuildTargetType })}>
-              <option value="Game">Game</option>
-              <option value="Client">Client</option>
-              <option value="Server">Server</option>
+              {availableTargetTypes.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
             </select>
           </label>
           <label>
@@ -339,9 +388,14 @@ export function SchedulesPage() {
           </label>
           <div className="span-two">
             <p className="muted-text">
-              定时任务按部署机本地时间执行。所有项目任务会在触发时读取当前全部项目，并统一以 HEAD 版本入队。
+              定时任务按部署机本地时间执行。所有项目任务会按所选平台筛选兼容项目，统一以 HEAD 版本入队。
             </p>
           </div>
+          {form.platform === 'Android' ? (
+            <div className="span-two">
+              <p className="muted-text">Android 第一版固定为 ASTC 测试包，只支持 Game。</p>
+            </div>
+          ) : null}
           <div className="form-actions span-two">
             <button type="submit" className="primary-button" disabled={submitting || loading}>
               {submitting ? '正在保存...' : editingSchedule ? '保存任务' : '创建任务'}
@@ -375,7 +429,7 @@ export function SchedulesPage() {
                   <p className="muted-text">
                     {schedule.scopeType === 'SingleProject'
                       ? `单项目 / ${schedule.projectName ?? '未绑定项目'}`
-                      : '所有项目 / 触发时读取当前项目列表'}
+                      : `所有项目 / 触发时读取当前${formatPlatform(schedule.platform)}兼容项目`}
                   </p>
                 </div>
                 <span className={`status-pill ${schedule.enabled ? 'succeeded' : 'queued'}`}>
@@ -391,7 +445,7 @@ export function SchedulesPage() {
                 <div>
                   <dt>构建参数</dt>
                   <dd>
-                    {schedule.targetType} / {schedule.buildConfiguration}
+                    {formatPlatform(schedule.platform)} / {schedule.targetType} / {schedule.buildConfiguration}
                   </dd>
                 </div>
                 <div>

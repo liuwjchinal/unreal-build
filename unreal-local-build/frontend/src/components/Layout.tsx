@@ -6,7 +6,7 @@ export function Layout({ children }: PropsWithChildren) {
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Unreal Windows Packaging</p>
+          <p className="eyebrow">Unreal Build Packaging</p>
           <h1>本地打包控制台</h1>
         </div>
         <nav className="topnav">

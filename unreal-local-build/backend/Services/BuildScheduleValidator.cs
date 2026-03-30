@@ -24,6 +24,11 @@ public sealed class BuildScheduleValidator(IDbContextFactory<BuildDbContext> dbF
             Add(nameof(request.TimeOfDayLocal), "触发时间必须使用 24 小时制 HH:mm 格式。");
         }
 
+        if (!BuildCommandFactory.SupportsTargetType(request.Platform, request.TargetType))
+        {
+            Add(nameof(request.TargetType), "Android 定时任务只支持 Game。");
+        }
+
         if (request.ScopeType == BuildScheduleScopeType.SingleProject)
         {
             if (!request.ProjectId.HasValue)
@@ -43,23 +48,7 @@ public sealed class BuildScheduleValidator(IDbContextFactory<BuildDbContext> dbF
                 }
                 else
                 {
-                    if (!project.AllowedBuildConfigurations.Contains(request.BuildConfiguration.Trim(), StringComparer.OrdinalIgnoreCase))
-                    {
-                        Add(nameof(request.BuildConfiguration), "该项目不允许当前构建配置。");
-                    }
-
-                    var targetName = request.TargetType switch
-                    {
-                        BuildTargetType.Game => project.GameTarget,
-                        BuildTargetType.Client => project.ClientTarget,
-                        BuildTargetType.Server => project.ServerTarget,
-                        _ => null
-                    };
-
-                    if (string.IsNullOrWhiteSpace(targetName))
-                    {
-                        Add(nameof(request.TargetType), $"项目未配置 {request.TargetType} Target。");
-                    }
+                    ValidateProjectCompatibility(project);
                 }
             }
         }
@@ -69,6 +58,25 @@ public sealed class BuildScheduleValidator(IDbContextFactory<BuildDbContext> dbF
         }
 
         return errors.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
+
+        void ValidateProjectCompatibility(ProjectConfig project)
+        {
+            if (!project.AllowedBuildConfigurations.Contains(request.BuildConfiguration.Trim(), StringComparer.OrdinalIgnoreCase))
+            {
+                Add(nameof(request.BuildConfiguration), "该项目不允许当前构建配置。");
+            }
+
+            if (request.Platform == BuildPlatform.Android && !project.AndroidEnabled)
+            {
+                Add(nameof(request.Platform), "该项目未启用 Android 构建。");
+            }
+
+            var targetName = BuildCommandFactory.ResolveTargetName(project, request.Platform, request.TargetType);
+            if (string.IsNullOrWhiteSpace(targetName))
+            {
+                Add(nameof(request.TargetType), $"项目未配置 {request.Platform} / {request.TargetType} Target。");
+            }
+        }
 
         void AddIf(bool condition, string key, string message)
         {

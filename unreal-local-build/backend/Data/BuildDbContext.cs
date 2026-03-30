@@ -41,6 +41,7 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.Property(project => project.GameTarget).HasMaxLength(200);
             entity.Property(project => project.ClientTarget).HasMaxLength(200);
             entity.Property(project => project.ServerTarget).HasMaxLength(200);
+            entity.Property(project => project.AndroidTextureFlavor).HasMaxLength(50);
             entity.Property(project => project.AllowedBuildConfigurations)
                 .HasConversion(stringListConverter)
                 .Metadata.SetValueComparer(stringListComparer);
@@ -57,6 +58,7 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.HasKey(build => build.Id);
             entity.Property(build => build.Status).HasConversion<string>();
             entity.Property(build => build.CurrentPhase).HasConversion<string>();
+            entity.Property(build => build.Platform).HasConversion<string>();
             entity.Property(build => build.TargetType).HasConversion<string>();
             entity.Property(build => build.TriggerSource).HasConversion<string>();
             entity.Property(build => build.LogFilePath).HasMaxLength(1000);
@@ -91,6 +93,7 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.Property(schedule => schedule.Name).HasMaxLength(200);
             entity.Property(schedule => schedule.ScopeType).HasConversion<string>();
             entity.Property(schedule => schedule.TimeOfDayLocal).HasMaxLength(5);
+            entity.Property(schedule => schedule.Platform).HasConversion<string>();
             entity.Property(schedule => schedule.TargetType).HasConversion<string>();
             entity.Property(schedule => schedule.BuildConfiguration).HasMaxLength(100);
             entity.Property(schedule => schedule.ExtraUatArgs)

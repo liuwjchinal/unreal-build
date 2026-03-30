@@ -13,6 +13,8 @@ public sealed record UpsertProjectRequest(
     string? GameTarget,
     string? ClientTarget,
     string? ServerTarget,
+    bool? AndroidEnabled,
+    string? AndroidTextureFlavor,
     List<string>? AllowedBuildConfigurations,
     List<string>? DefaultExtraUatArgs);
 
@@ -27,6 +29,8 @@ public sealed record ProjectSummaryDto(
     string? GameTarget,
     string? ClientTarget,
     string? ServerTarget,
+    bool AndroidEnabled,
+    string AndroidTextureFlavor,
     IReadOnlyList<string> AllowedBuildConfigurations,
     IReadOnlyList<string> DefaultExtraUatArgs,
     DateTimeOffset CreatedAtUtc,
@@ -43,6 +47,8 @@ public sealed record ProjectConfigDto(
     string? GameTarget,
     string? ClientTarget,
     string? ServerTarget,
+    bool AndroidEnabled,
+    string AndroidTextureFlavor,
     IReadOnlyList<string> AllowedBuildConfigurations,
     IReadOnlyList<string> DefaultExtraUatArgs,
     DateTimeOffset CreatedAtUtc,
@@ -82,6 +88,8 @@ public static class ProjectContractMappings
         project.GameTarget = request.GameTarget?.Trim();
         project.ClientTarget = request.ClientTarget?.Trim();
         project.ServerTarget = request.ServerTarget?.Trim();
+        project.AndroidEnabled = NormalizeAndroidEnabled(request.AndroidEnabled);
+        project.AndroidTextureFlavor = NormalizeAndroidTextureFlavor(request.AndroidTextureFlavor);
         project.AllowedBuildConfigurations = NormalizeList(request.AllowedBuildConfigurations, new[] { "Development", "Shipping" });
         project.DefaultExtraUatArgs = NormalizeList(request.DefaultExtraUatArgs, Array.Empty<string>());
         project.ProjectFingerprint = ProjectIdentity.CreateFingerprint(
@@ -104,6 +112,8 @@ public static class ProjectContractMappings
             project.GameTarget,
             project.ClientTarget,
             project.ServerTarget,
+            project.AndroidEnabled,
+            project.AndroidTextureFlavor,
             project.AllowedBuildConfigurations,
             project.DefaultExtraUatArgs,
             project.CreatedAtUtc,
@@ -123,10 +133,23 @@ public static class ProjectContractMappings
             project.GameTarget,
             project.ClientTarget,
             project.ServerTarget,
+            project.AndroidEnabled,
+            project.AndroidTextureFlavor,
             project.AllowedBuildConfigurations,
             project.DefaultExtraUatArgs,
             project.CreatedAtUtc,
             project.UpdatedAtUtc);
+    }
+
+    private static string NormalizeAndroidTextureFlavor(string? value)
+    {
+        var flavor = value?.Trim();
+        return string.IsNullOrWhiteSpace(flavor) ? "ASTC" : flavor.ToUpperInvariant();
+    }
+
+    private static bool NormalizeAndroidEnabled(bool? value)
+    {
+        return value ?? true;
     }
 
     private static List<string> NormalizeList(IEnumerable<string>? values, IEnumerable<string> fallback)

@@ -1,3 +1,5 @@
+import type { BuildPlatform } from '../types/api'
+
 export function formatUtc(value?: string | null) {
   if (!value) {
     return '-'
@@ -47,4 +49,8 @@ export function formatSvnRevision(value?: string | null) {
     : value.toLowerCase().startsWith('r')
       ? `SVN ${value}`
       : `SVN r${value}`
+}
+
+export function formatPlatform(platform: BuildPlatform) {
+  return platform === 'Android' ? 'Android' : 'Windows'
 }

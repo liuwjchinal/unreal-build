@@ -100,6 +100,7 @@ public sealed class BuildScheduleRunner(
             var request = new QueueBuildRequest(
                 project.Id,
                 "HEAD",
+                schedule.Platform,
                 schedule.TargetType,
                 schedule.BuildConfiguration,
                 schedule.Clean,
@@ -167,13 +168,48 @@ public sealed class BuildScheduleRunner(
                 .AsNoTracking()
                 .FirstOrDefaultAsync(item => item.Id == schedule.ProjectId.Value, cancellationToken);
 
-            return project is null ? new List<ProjectConfig>() : new List<ProjectConfig> { project };
+            if (project is null)
+            {
+                return new List<ProjectConfig>();
+            }
+
+            return IsProjectCompatible(project, schedule)
+                ? new List<ProjectConfig> { project }
+                : new List<ProjectConfig>();
         }
 
-        return await db.Projects
+        var query = db.Projects
             .AsNoTracking()
             .OrderBy(item => item.Name)
-            .ToListAsync(cancellationToken);
+            .AsQueryable();
+
+        if (schedule.Platform == BuildPlatform.Android)
+        {
+            query = query.Where(item => item.AndroidEnabled);
+        }
+
+        var projects = await query.ToListAsync(cancellationToken);
+        return projects.Where(project => IsProjectCompatible(project, schedule)).ToList();
+    }
+
+    private static bool IsProjectCompatible(ProjectConfig project, BuildSchedule schedule)
+    {
+        if (!project.AllowedBuildConfigurations.Contains(schedule.BuildConfiguration, StringComparer.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!BuildCommandFactory.SupportsTargetType(schedule.Platform, schedule.TargetType))
+        {
+            return false;
+        }
+
+        if (schedule.Platform == BuildPlatform.Android && !project.AndroidEnabled)
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(BuildCommandFactory.ResolveTargetName(project, schedule.Platform, schedule.TargetType));
     }
 
     private async Task UpdateScheduleStateAsync(

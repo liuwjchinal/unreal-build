@@ -16,6 +16,8 @@ public sealed class BuildRecord
 
     public Guid? ScheduleId { get; set; }
 
+    public BuildPlatform Platform { get; set; } = BuildPlatform.Windows;
+
     public BuildTargetType TargetType { get; set; }
 
     public string TargetName { get; set; } = string.Empty;

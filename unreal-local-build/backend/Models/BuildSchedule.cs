@@ -16,6 +16,8 @@ public sealed class BuildSchedule
 
     public string TimeOfDayLocal { get; set; } = "12:00";
 
+    public BuildPlatform Platform { get; set; } = BuildPlatform.Windows;
+
     public BuildTargetType TargetType { get; set; } = BuildTargetType.Game;
 
     public string BuildConfiguration { get; set; } = "Development";

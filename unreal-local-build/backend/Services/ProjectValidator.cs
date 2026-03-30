@@ -8,6 +8,8 @@ namespace Backend.Services;
 
 public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory, ILogger<ProjectValidator> logger)
 {
+    private static readonly string[] AndroidSupportedFlavors = ["ASTC"];
+
     public Task<Dictionary<string, string[]>> ValidateProjectAsync(
         UpsertProjectRequest request,
         Guid? existingProjectId,
@@ -17,6 +19,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             request,
             existingProjectId,
             includeSvnStatus: false,
+            platform: null,
             targetType: null,
             buildConfiguration: null,
             cancellationToken);
@@ -37,6 +40,8 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             project.GameTarget,
             project.ClientTarget,
             project.ServerTarget,
+            project.AndroidEnabled,
+            project.AndroidTextureFlavor,
             project.AllowedBuildConfigurations,
             project.DefaultExtraUatArgs);
 
@@ -44,6 +49,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             normalizedRequest,
             project.Id,
             includeSvnStatus: true,
+            platform: request.Platform,
             targetType: request.TargetType,
             buildConfiguration: request.BuildConfiguration,
             cancellationToken);
@@ -53,6 +59,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         UpsertProjectRequest request,
         Guid? existingProjectId,
         bool includeSvnStatus,
+        BuildPlatform? platform,
         BuildTargetType? targetType,
         string? buildConfiguration,
         CancellationToken cancellationToken)
@@ -95,6 +102,15 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             }
         }
 
+        var normalizedAndroidTextureFlavor = string.IsNullOrWhiteSpace(request.AndroidTextureFlavor)
+            ? "ASTC"
+            : request.AndroidTextureFlavor.Trim();
+
+        if (!AndroidSupportedFlavors.Contains(normalizedAndroidTextureFlavor, StringComparer.OrdinalIgnoreCase))
+        {
+            Add(nameof(request.AndroidTextureFlavor), "Android 第一版只支持 ASTC。");
+        }
+
         var allowedConfigs = request.AllowedBuildConfigurations?
             .Select(item => item.Trim())
             .Where(item => !string.IsNullOrWhiteSpace(item))
@@ -124,31 +140,36 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             ValidateTargetFile(nameof(request.ServerTarget), request.ServerTarget, targetSearchRoots);
         }
 
-        if (targetType.HasValue)
+        if (platform.HasValue && targetType.HasValue)
         {
-            var targetName = targetType.Value switch
+            if (!BuildCommandFactory.SupportsTargetType(platform.Value, targetType.Value))
             {
-                BuildTargetType.Game => request.GameTarget,
-                BuildTargetType.Client => request.ClientTarget,
-                BuildTargetType.Server => request.ServerTarget,
-                _ => null
-            };
-
-            if (string.IsNullOrWhiteSpace(targetName))
-            {
-                Add(nameof(targetType), AppText.TargetNotConfigured(targetType.Value.ToString()));
+                Add(nameof(targetType), "Android 第一版只支持 Game。");
             }
-            else if (targetSearchRoots.Count > 0)
+            else
             {
-                var requestedTargetFileName = $"{targetName.Trim()}.Target.cs";
-                var exists = targetSearchRoots.Any(root =>
-                    Directory.Exists(root) &&
-                    Directory.EnumerateFiles(root, requestedTargetFileName, SearchOption.AllDirectories).Any());
-
-                if (!exists)
+                var targetName = ResolveTargetName(request, platform.Value, targetType.Value);
+                if (string.IsNullOrWhiteSpace(targetName))
                 {
-                    Add(nameof(targetType), $"当前项目不存在 Target {targetName.Trim()}。请在项目配置中改为实际 Target 名称。");
+                    Add(nameof(targetType), $"项目未配置 {platform.Value} / {targetType.Value} Target。");
                 }
+                else if (targetSearchRoots.Count > 0)
+                {
+                    var requestedTargetFileName = $"{targetName.Trim()}.Target.cs";
+                    var exists = targetSearchRoots.Any(root =>
+                        Directory.Exists(root) &&
+                        Directory.EnumerateFiles(root, requestedTargetFileName, SearchOption.AllDirectories).Any());
+
+                    if (!exists)
+                    {
+                        Add(nameof(targetType), $"当前项目中不存在 Target {targetName.Trim()}。请在项目配置中改为实际 Target 名称。");
+                    }
+                }
+            }
+
+            if (platform == BuildPlatform.Android)
+            {
+                ValidateAndroidRequest(request, projectDirectory);
             }
         }
 
@@ -161,6 +182,53 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         }
 
         return errors.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
+
+        void ValidateAndroidRequest(UpsertProjectRequest source, string? sourceProjectDirectory)
+        {
+            if (!(source.AndroidEnabled ?? true))
+            {
+                Add(nameof(source.AndroidEnabled), "该项目未启用 Android 构建。");
+            }
+
+            if (!HasAndroidRuntimeSettings(sourceProjectDirectory))
+            {
+                Add(nameof(source.AndroidEnabled), "项目未检测到 AndroidRuntimeSettings 配置。请先在项目中启用 Android 平台设置。");
+            }
+
+            var sdkRoot = ResolveAndroidSdkRoot();
+            if (string.IsNullOrWhiteSpace(sdkRoot) || !Directory.Exists(sdkRoot))
+            {
+                Add(nameof(platform), "未检测到 Android SDK。请先配置 ANDROID_HOME 或 ANDROID_SDK_ROOT。");
+            }
+            else
+            {
+                var licensesDirectory = Path.Combine(sdkRoot, "licenses");
+                var licensePath = Path.Combine(licensesDirectory, "android-sdk-license");
+                if (!File.Exists(licensePath))
+                {
+                    Add(nameof(platform), "未检测到 Android SDK License。请先接受 Android SDK License。");
+                }
+
+                var buildToolsDirectory = Path.Combine(sdkRoot, "build-tools");
+                if (!Directory.Exists(buildToolsDirectory) ||
+                    !Directory.EnumerateDirectories(buildToolsDirectory).Any())
+                {
+                    Add(nameof(platform), "Android SDK 缺少 build-tools。");
+                }
+            }
+
+            var javaHome = Environment.GetEnvironmentVariable("JAVA_HOME");
+            if (string.IsNullOrWhiteSpace(javaHome) || !Directory.Exists(javaHome))
+            {
+                Add(nameof(platform), "未检测到 JAVA_HOME。");
+            }
+
+            var ndkRoot = ResolveAndroidNdkRoot(sdkRoot);
+            if (string.IsNullOrWhiteSpace(ndkRoot) || !Directory.Exists(ndkRoot))
+            {
+                Add(nameof(platform), "未检测到 Android NDK。请先配置 ANDROID_NDK_ROOT 或 NDKROOT。");
+            }
+        }
 
         void AddIf(bool condition, string key, string message)
         {
@@ -211,6 +279,25 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         }
     }
 
+    private static string ResolveTargetName(
+        UpsertProjectRequest request,
+        BuildPlatform platform,
+        BuildTargetType targetType)
+    {
+        if (platform == BuildPlatform.Android)
+        {
+            return request.GameTarget ?? string.Empty;
+        }
+
+        return targetType switch
+        {
+            BuildTargetType.Game => request.GameTarget ?? string.Empty,
+            BuildTargetType.Client => request.ClientTarget ?? string.Empty,
+            BuildTargetType.Server => request.ServerTarget ?? string.Empty,
+            _ => string.Empty
+        };
+    }
+
     private static IEnumerable<string> GetTargetSearchRoots(string? projectDirectory)
     {
         if (string.IsNullOrWhiteSpace(projectDirectory))
@@ -229,6 +316,85 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         {
             yield return intermediateSourceDirectory;
         }
+    }
+
+    private static bool HasAndroidRuntimeSettings(string? projectDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(projectDirectory))
+        {
+            return false;
+        }
+
+        var configDirectory = Path.Combine(projectDirectory, "Config");
+        if (!Directory.Exists(configDirectory))
+        {
+            return false;
+        }
+
+        foreach (var filePath in Directory.EnumerateFiles(configDirectory, "*.ini", SearchOption.AllDirectories))
+        {
+            try
+            {
+                var content = File.ReadAllText(filePath);
+                if (content.Contains("AndroidRuntimeSettings", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                // Ignore unreadable config fragments and continue.
+            }
+        }
+
+        return false;
+    }
+
+    private static string? ResolveAndroidSdkRoot()
+    {
+        var candidates = new[]
+        {
+            Environment.GetEnvironmentVariable("ANDROID_SDK_ROOT"),
+            Environment.GetEnvironmentVariable("ANDROID_HOME")
+        };
+
+        return candidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate));
+    }
+
+    private static string? ResolveAndroidNdkRoot(string? sdkRoot)
+    {
+        var envCandidates = new[]
+        {
+            Environment.GetEnvironmentVariable("ANDROID_NDK_ROOT"),
+            Environment.GetEnvironmentVariable("NDKROOT")
+        };
+
+        var envMatch = envCandidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate));
+        if (!string.IsNullOrWhiteSpace(envMatch))
+        {
+            return envMatch;
+        }
+
+        if (string.IsNullOrWhiteSpace(sdkRoot) || !Directory.Exists(sdkRoot))
+        {
+            return null;
+        }
+
+        var ndkBundle = Path.Combine(sdkRoot, "ndk-bundle");
+        if (Directory.Exists(ndkBundle))
+        {
+            return ndkBundle;
+        }
+
+        var ndkDirectory = Path.Combine(sdkRoot, "ndk");
+        if (!Directory.Exists(ndkDirectory))
+        {
+            return null;
+        }
+
+        return Directory.EnumerateDirectories(ndkDirectory)
+            .OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
     }
 
     private async Task ValidateUniqueIdentityAsync(
@@ -250,7 +416,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
 
         if (duplicateKey is not null)
         {
-            AddError(nameof(request.ProjectKey), "ProjectKey 已被其它项目占用。");
+            AddError(nameof(request.ProjectKey), "ProjectKey 已被其他项目占用。");
         }
 
         var duplicateFingerprint = await db.Projects

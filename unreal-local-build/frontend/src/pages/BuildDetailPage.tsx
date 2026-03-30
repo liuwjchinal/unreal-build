@@ -2,7 +2,7 @@ import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, parseBuildEvent } from '../api/client'
 import { BuildStatusBadge } from '../components/BuildStatusBadge'
-import { formatDuration, formatUtc } from '../components/formatters'
+import { formatDuration, formatPlatform, formatUtc } from '../components/formatters'
 import type { BuildDetailDto, BuildLogSnapshotDto } from '../types/api'
 
 const MAX_LOG_LINES = 4000
@@ -274,7 +274,7 @@ export function BuildDetailPage() {
           <div>
             <p className="eyebrow">Build Detail</p>
             <h2>
-              {build.projectName} / {build.targetType} / {build.buildConfiguration}
+              {build.projectName} / {formatPlatform(build.platform)} / {build.targetType} / {build.buildConfiguration}
             </h2>
           </div>
           <div className="card-actions">
@@ -309,6 +309,10 @@ export function BuildDetailPage() {
           <div>
             <dt>Revision</dt>
             <dd>{build.revision}</dd>
+          </div>
+          <div>
+            <dt>平台</dt>
+            <dd>{formatPlatform(build.platform)}</dd>
           </div>
           <div>
             <dt>Target</dt>

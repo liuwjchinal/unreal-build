@@ -24,6 +24,12 @@ public enum BuildPhase
     Interrupted
 }
 
+public enum BuildPlatform
+{
+    Windows,
+    Android
+}
+
 public enum BuildTargetType
 {
     Game,

@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { BuildStatusBadge } from '../components/BuildStatusBadge'
-import { formatDuration, formatSvnRevision, formatUtc, parseTextAreaList } from '../components/formatters'
-import type { BuildSummaryDto, BuildTargetType, ProjectSummaryDto, QueueBuildRequest } from '../types/api'
+import { formatDuration, formatPlatform, formatSvnRevision, formatUtc, parseTextAreaList } from '../components/formatters'
+import type { BuildPlatform, BuildSummaryDto, BuildTargetType, ProjectSummaryDto, QueueBuildRequest } from '../types/api'
 
 const DEFAULT_TARGET: BuildTargetType = 'Game'
+const DEFAULT_PLATFORM: BuildPlatform = 'Windows'
 
 export function BuildsPage() {
   const navigate = useNavigate()
@@ -13,6 +14,7 @@ export function BuildsPage() {
   const [builds, setBuilds] = useState<BuildSummaryDto[]>([])
   const [projectId, setProjectId] = useState('')
   const [revision, setRevision] = useState('HEAD')
+  const [platform, setPlatform] = useState<BuildPlatform>(DEFAULT_PLATFORM)
   const [targetType, setTargetType] = useState<BuildTargetType>(DEFAULT_TARGET)
   const [buildConfiguration, setBuildConfiguration] = useState('Development')
   const [clean, setClean] = useState(false)
@@ -28,6 +30,19 @@ export function BuildsPage() {
     [projectId, projects],
   )
 
+  const availablePlatforms = useMemo<BuildPlatform[]>(() => {
+    if (!selectedProject) {
+      return ['Windows', 'Android']
+    }
+
+    return selectedProject.androidEnabled ? ['Windows', 'Android'] : ['Windows']
+  }, [selectedProject])
+
+  const availableTargetTypes = useMemo<BuildTargetType[]>(
+    () => (platform === 'Android' ? ['Game'] : ['Game', 'Client', 'Server']),
+    [platform],
+  )
+
   useEffect(() => {
     void bootstrap()
   }, [])
@@ -41,6 +56,18 @@ export function BuildsPage() {
       setBuildConfiguration(selectedProject.allowedBuildConfigurations[0] ?? 'Development')
     }
   }, [buildConfiguration, selectedProject])
+
+  useEffect(() => {
+    if (!availablePlatforms.includes(platform)) {
+      setPlatform('Windows')
+    }
+  }, [availablePlatforms, platform])
+
+  useEffect(() => {
+    if (!availableTargetTypes.includes(targetType)) {
+      setTargetType('Game')
+    }
+  }, [availableTargetTypes, targetType])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -89,6 +116,7 @@ export function BuildsPage() {
     const payload: QueueBuildRequest = {
       projectId,
       revision,
+      platform,
       targetType,
       buildConfiguration,
       clean,
@@ -141,11 +169,23 @@ export function BuildsPage() {
             <input value={revision} onChange={(event) => setRevision(event.target.value)} required />
           </label>
           <label>
+            平台
+            <select value={platform} onChange={(event) => setPlatform(event.target.value as BuildPlatform)}>
+              {availablePlatforms.map((item) => (
+                <option key={item} value={item}>
+                  {formatPlatform(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
             Target 类型
             <select value={targetType} onChange={(event) => setTargetType(event.target.value as BuildTargetType)}>
-              <option value="Game">Game</option>
-              <option value="Client">Client</option>
-              <option value="Server">Server</option>
+              {availableTargetTypes.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
             </select>
           </label>
           <label>
@@ -174,6 +214,12 @@ export function BuildsPage() {
             额外 UAT 参数
             <textarea rows={4} value={extraUatArgs} onChange={(event) => setExtraUatArgs(event.target.value)} />
           </label>
+
+          {platform === 'Android' ? (
+            <div className="span-two">
+              <p className="muted-text">Android 第一版固定为 ASTC 测试包，只支持 Game Target。</p>
+            </div>
+          ) : null}
 
           <div className="form-actions span-two">
             <button type="submit" className="primary-button" disabled={submitting || loading || projects.length === 0}>
@@ -206,7 +252,7 @@ export function BuildsPage() {
                   <div className="build-title-row">
                     <BuildStatusBadge status={build.status} />
                     <Link to={`/builds/${build.id}`} className="build-link">
-                      {build.projectName} / {build.targetType} / {build.buildConfiguration}
+                      {build.projectName} / {formatPlatform(build.platform)} / {build.targetType} / {build.buildConfiguration}
                     </Link>
                   </div>
                   <p className="muted-text">

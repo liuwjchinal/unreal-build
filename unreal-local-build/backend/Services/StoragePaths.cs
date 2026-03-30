@@ -110,10 +110,11 @@ public sealed class StoragePaths
     private static string BuildArtifactBaseName(BuildRecord build, DateTimeOffset timestampUtc)
     {
         var safeProjectName = MakeSafePathSegment(build.Project?.Name ?? "Build");
+        var safePlatform = MakeSafePathSegment(build.Platform.ToString());
         var safeConfiguration = MakeSafePathSegment(build.BuildConfiguration);
         var safeTargetType = MakeSafePathSegment(build.TargetType.ToString());
         var safeRevision = MakeSafePathSegment(FormatSvnRevision(build.Revision));
-        return $"{timestampUtc:yyyyMMdd-HHmmss}-{safeProjectName}-{safeConfiguration}-{safeTargetType}-{safeRevision}";
+        return $"{timestampUtc:yyyyMMdd-HHmmss}-{safeProjectName}-{safePlatform}-{safeConfiguration}-{safeTargetType}-{safeRevision}";
     }
 
     private static string MakeSafePathSegment(string input)

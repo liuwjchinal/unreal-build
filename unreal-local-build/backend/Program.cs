@@ -92,6 +92,8 @@ api.MapGet("/health", (BuildScheduleRuntimeState scheduleRuntimeState) =>
         cleanupArchiveDirectories = appOptions.CleanupArchiveDirectories,
         scheduleServiceEnabled = appOptions.ScheduleServiceEnabled,
         scheduleScanIntervalSeconds = appOptions.ScheduleScanIntervalSeconds,
+        supportedPlatforms = new[] { BuildPlatform.Windows, BuildPlatform.Android },
+        androidBuildFlavor = "ASTC",
         enabledScheduleCount = scheduleRuntimeState.EnabledScheduleCount,
         lastScheduleTickUtc = scheduleRuntimeState.LastScheduleTickUtc,
         buildCacheDirectory = storagePaths.BuildsRootPath,
@@ -127,6 +129,8 @@ api.MapGet("/projects/export", async (IDbContextFactory<BuildDbContext> dbFactor
             project.GameTarget,
             project.ClientTarget,
             project.ServerTarget,
+            project.AndroidEnabled,
+            project.AndroidTextureFlavor,
             project.AllowedBuildConfigurations,
             project.DefaultExtraUatArgs))
         .ToListAsync(cancellationToken);

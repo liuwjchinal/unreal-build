@@ -24,6 +24,10 @@ public sealed class ProjectConfig
 
     public string? ServerTarget { get; set; }
 
+    public bool AndroidEnabled { get; set; } = true;
+
+    public string AndroidTextureFlavor { get; set; } = "ASTC";
+
     public List<string> AllowedBuildConfigurations { get; set; } = new() { "Development", "Shipping" };
 
     public List<string> DefaultExtraUatArgs { get; set; } = new();
