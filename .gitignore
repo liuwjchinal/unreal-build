@@ -1,7 +1,7 @@
 .idea/
 .vs/
 *.zip
-scripts/
+/scripts/
 tracy-ui-0.13.0/
 TracyUnrealPlugin/
 tracy-assets.html

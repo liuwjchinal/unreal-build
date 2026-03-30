@@ -2,7 +2,12 @@ using Backend.Models;
 
 namespace Backend.Services;
 
-public sealed record ProcessCommand(string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory, string DisplayString);
+public sealed record ProcessCommand(
+    string FileName,
+    IReadOnlyList<string> Arguments,
+    string WorkingDirectory,
+    string DisplayString,
+    IReadOnlyDictionary<string, string>? EnvironmentVariables = null);
 
 public static class BuildCommandFactory
 {
@@ -32,11 +37,18 @@ public static class BuildCommandFactory
         var runUatPath = Path.Combine(project.EngineRootPath, "Engine", "Build", "BatchFiles", "RunUAT.bat");
         var arguments = BuildBaseUatArguments(project, build, includeArchiveDirectory: true);
 
+        IReadOnlyDictionary<string, string>? environmentVariables = null;
+        if (build.Platform == BuildPlatform.Android)
+        {
+            environmentVariables = AndroidToolchain.BuildProcessEnvironmentOverrides();
+        }
+
         return new ProcessCommand(
             "cmd.exe",
             arguments,
             Path.GetDirectoryName(runUatPath) ?? project.EngineRootPath,
-            $"cmd.exe {string.Join(' ', arguments.Select(QuoteForDisplay))}");
+            $"cmd.exe {string.Join(' ', arguments.Select(QuoteForDisplay))}",
+            environmentVariables);
     }
 
     public static string ResolveTargetName(ProjectConfig project, BuildPlatform platform, BuildTargetType targetType)

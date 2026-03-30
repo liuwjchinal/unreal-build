@@ -103,7 +103,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         }
 
         var normalizedAndroidTextureFlavor = string.IsNullOrWhiteSpace(request.AndroidTextureFlavor)
-            ? "ASTC"
+            ? BuildCommandFactory.GetDefaultAndroidTextureFlavor()
             : request.AndroidTextureFlavor.Trim();
 
         if (!AndroidSupportedFlavors.Contains(normalizedAndroidTextureFlavor, StringComparer.OrdinalIgnoreCase))
@@ -352,49 +352,18 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
 
     private static string? ResolveAndroidSdkRoot()
     {
-        var candidates = new[]
-        {
-            Environment.GetEnvironmentVariable("ANDROID_SDK_ROOT"),
-            Environment.GetEnvironmentVariable("ANDROID_HOME")
-        };
-
-        return candidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate));
+        return AndroidToolchain.ResolveSdkRoot();
     }
 
     private static string? ResolveAndroidNdkRoot(string? sdkRoot)
     {
-        var envCandidates = new[]
-        {
-            Environment.GetEnvironmentVariable("ANDROID_NDK_ROOT"),
-            Environment.GetEnvironmentVariable("NDKROOT")
-        };
-
-        var envMatch = envCandidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate));
-        if (!string.IsNullOrWhiteSpace(envMatch))
-        {
-            return envMatch;
-        }
-
-        if (string.IsNullOrWhiteSpace(sdkRoot) || !Directory.Exists(sdkRoot))
+        var ndkRoot = AndroidToolchain.ResolveNdkRoot(sdkRoot);
+        if (!AndroidToolchain.IsUsableNdkRoot(ndkRoot, out _))
         {
             return null;
         }
 
-        var ndkBundle = Path.Combine(sdkRoot, "ndk-bundle");
-        if (Directory.Exists(ndkBundle))
-        {
-            return ndkBundle;
-        }
-
-        var ndkDirectory = Path.Combine(sdkRoot, "ndk");
-        if (!Directory.Exists(ndkDirectory))
-        {
-            return null;
-        }
-
-        return Directory.EnumerateDirectories(ndkDirectory)
-            .OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault();
+        return ndkRoot;
     }
 
     private async Task ValidateUniqueIdentityAsync(

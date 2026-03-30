@@ -456,6 +456,14 @@ public sealed class BuildOrchestrator(
             startInfo.ArgumentList.Add(argument);
         }
 
+        if (command.EnvironmentVariables is not null)
+        {
+            foreach (var pair in command.EnvironmentVariables)
+            {
+                startInfo.Environment[pair.Key] = pair.Value;
+            }
+        }
+
         using var process = new Process { StartInfo = startInfo };
         process.Start();
         await automationToolJanitor.TrackOwnedProcessAsync(build.Id, command, process.Id, cancellationToken);
