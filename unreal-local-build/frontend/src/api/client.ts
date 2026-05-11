@@ -15,27 +15,45 @@ import type {
   ValidationProblemDetails,
 } from '../types/api'
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? ''
+const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
+const DIRECT_BACKEND_ORIGIN = (__LOCAL_BUILD_BACKEND_ORIGIN__ ?? '').replace(/\/$/, '')
 
-function getDownloadBase() {
+function isLoopbackHostname(hostname: string) {
+  const normalized = hostname.trim().toLowerCase()
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1' || normalized === '[::1]'
+}
+
+function resolveRequestBase() {
   if (API_BASE) {
     return API_BASE
+  }
+
+  if (typeof window === 'undefined') {
+    return DIRECT_BACKEND_ORIGIN
+  }
+
+  // When this dev server is opened from another LAN machine, "localhost" would point
+  // to the client machine instead of the build host. In that case, go through Vite's
+  // same-origin /api proxy so requests stay on the build host.
+  return isLoopbackHostname(window.location.hostname) ? DIRECT_BACKEND_ORIGIN : ''
+}
+
+const REQUEST_BASE = resolveRequestBase()
+
+function getDownloadBase() {
+  if (REQUEST_BASE) {
+    return REQUEST_BASE
   }
 
   if (typeof window === 'undefined') {
     return ''
   }
 
-  const { protocol, hostname, port, origin } = window.location
-  if (port === '5173') {
-    return `${protocol}//${hostname}:5080`
-  }
-
-  return origin
+  return window.location.origin
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${REQUEST_BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers ?? {}),
@@ -68,7 +86,7 @@ export const api = {
     return request<ProjectConfigDto>(`/api/projects/${id}/config`)
   },
   async exportProjects() {
-    const response = await fetch(`${API_BASE}/api/projects/export`)
+    const response = await fetch(`${REQUEST_BASE}/api/projects/export`)
     if (!response.ok) {
       throw new Error(`导出失败: ${response.status}`)
     }
@@ -162,7 +180,7 @@ export const api = {
     return request<BuildLogSnapshotDto>(`/api/builds/${id}/log${suffix}`)
   },
   createBuildEventSource(id: string) {
-    return new EventSource(`${API_BASE}/api/builds/${id}/events`)
+    return new EventSource(`${REQUEST_BASE}/api/builds/${id}/events`)
   },
   toDownloadUrl(path?: string | null) {
     return path ? `${getDownloadBase()}${path}` : null
