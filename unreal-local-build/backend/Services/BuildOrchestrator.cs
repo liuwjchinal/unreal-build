@@ -27,8 +27,10 @@ public sealed class BuildOrchestrator(
     AppOptions appOptions,
     BuildEventBroker eventBroker,
     AutomationToolJanitor automationToolJanitor,
+    BuildStageLogService buildStageLogService,
     BuildLogAnalyzer logAnalyzer,
     ProjectValidator projectValidator,
+    UbaAgentService ubaAgentService,
     ILogger<BuildOrchestrator> logger) : BackgroundService
 {
     private readonly Channel<bool> _dispatchSignals = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
@@ -91,10 +93,14 @@ public sealed class BuildOrchestrator(
             TargetType = request.TargetType,
             TargetName = BuildCommandFactory.ResolveTargetName(project, request.Platform, request.TargetType),
             BuildConfiguration = request.BuildConfiguration.Trim(),
+            BuildAccelerator = request.BuildAccelerator ?? project.DefaultBuildAccelerator,
             Clean = request.Clean,
             Pak = request.Pak,
             IoStore = request.IoStore,
-            ExtraUatArgs = NormalizeExtraArgs(project.DefaultExtraUatArgs, request.ExtraUatArgs),
+            ExtraUatArgs = NormalizeExtraArgs(
+                request.Platform,
+                project.DefaultExtraUatArgs,
+                request.ExtraUatArgs),
             Status = BuildStatus.Queued,
             CurrentPhase = BuildPhase.Queued,
             ProgressPercent = 0,
@@ -106,13 +112,32 @@ public sealed class BuildOrchestrator(
             ZipFilePath = string.Empty,
             DownloadUrl = null
         };
+        try
+        {
+            ubaAgentService.ApplyUbaSnapshot(build);
+        }
+        catch (UbaPortUnavailableException ex)
+        {
+            throw new BuildValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(request.BuildAccelerator)] = [ex.Message]
+            });
+        }
 
         var svnCommand = BuildCommandFactory.CreateSvnCommand(project, build);
         build.SvnCommandLine = svnCommand.DisplayString;
         build.UatCommandLine = BuildCommandFactory.CreateUatPreview(build);
 
         db.Builds.Add(build);
-        await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "enqueue build", cancellationToken);
+        try
+        {
+            await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "enqueue build", cancellationToken);
+        }
+        catch
+        {
+            ubaAgentService.ReleasePortForBuild(build.Id);
+            throw;
+        }
 
         await RefreshQueuedBuildsAsync(cancellationToken);
         await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-status"));
@@ -142,6 +167,7 @@ public sealed class BuildOrchestrator(
             build.ErrorSummary = AppText.UserCanceledQueuedBuild;
             build.FinishedAtUtc = DateTimeOffset.UtcNow;
             await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "cancel queued build", cancellationToken);
+            ubaAgentService.ReleasePortForBuild(build.Id);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-finished"));
             await RefreshQueuedBuildsAsync(cancellationToken);
             SignalDispatch();
@@ -229,6 +255,7 @@ public sealed class BuildOrchestrator(
     {
         _activeBuilds.TryRemove(runtime.BuildId, out _);
         _activeProjects.TryRemove(runtime.ProjectId, out _);
+        ubaAgentService.ReleasePortForBuild(runtime.BuildId);
         runtime.Dispose();
         _ = Task.Run(
             () => automationToolJanitor.CleanupIfSystemIdleAsync("Build completion cleanup", CancellationToken.None),
@@ -283,6 +310,8 @@ public sealed class BuildOrchestrator(
 
         await using var logStream = new FileStream(build.LogFilePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
         await using var writer = new StreamWriter(logStream, new UTF8Encoding(false)) { AutoFlush = true };
+        await using var stageSession = buildStageLogService.CreateCaptureSession(build, project);
+        await stageSession.InitializeAsync(cancellationToken);
 
         try
         {
@@ -290,20 +319,30 @@ public sealed class BuildOrchestrator(
             await writer.WriteLineAsync(build.SvnCommandLine ?? string.Empty);
             await writer.WriteLineAsync(build.UatCommandLine ?? string.Empty);
 
-            var progress = new ProgressTracker(build.CurrentPhase, build.ProgressPercent, build.StatusMessage);
+            var svnProgress = new ProgressTracker(build.CurrentPhase, build.ProgressPercent, build.StatusMessage);
+            var svnCommand = BuildCommandFactory.CreateSvnCommand(project, build);
+            await stageSession.StartStandaloneStageAsync(BuildStageLogKind.SourceSync, svnCommand, cancellationToken);
+            await PublishStageStateAsync(build, stageSession, force: true, cancellationToken);
 
             var svnExitCode = await RunProcessAsync(
-                BuildCommandFactory.CreateSvnCommand(project, build),
+                svnCommand,
                 build,
                 runtime,
                 writer,
-                progress,
+                svnProgress,
                 db,
+                stageSession,
+                trackUatStages: false,
                 cancellationToken);
+
+            await stageSession.CompleteActiveStagesAsync(
+                svnExitCode == 0 ? BuildStageLogStatus.Completed : BuildStageLogStatus.Failed,
+                cancellationToken);
+            await PublishStageStateAsync(build, stageSession, force: true, cancellationToken);
 
             if (svnExitCode != 0)
             {
-                await MarkFailedAsync(build, db, AppText.SvnFailed(svnExitCode), svnExitCode, cancellationToken);
+                await MarkFailedAsync(build, db, AppText.SvnFailed(svnExitCode), svnExitCode, stageSession, cancellationToken);
                 return;
             }
 
@@ -346,18 +385,30 @@ public sealed class BuildOrchestrator(
                 await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "acquire UAT slot", cancellationToken);
                 await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-progress"));
 
+                var uatCommand = BuildCommandFactory.CreateUatCommand(project, build);
+                var uatProgress = new ProgressTracker(build.CurrentPhase, build.ProgressPercent, build.StatusMessage);
+                await stageSession.StartStandaloneStageAsync(BuildStageLogKind.Build, uatCommand, cancellationToken);
+                await PublishStageStateAsync(build, stageSession, force: true, cancellationToken);
+
                 var uatExitCode = await RunProcessAsync(
-                    BuildCommandFactory.CreateUatCommand(project, build),
+                    uatCommand,
                     build,
                     runtime,
                     writer,
-                    progress,
+                    uatProgress,
                     db,
+                    stageSession,
+                    trackUatStages: true,
                     cancellationToken);
+
+                await stageSession.CompleteActiveStagesAsync(
+                    uatExitCode == 0 ? BuildStageLogStatus.Completed : BuildStageLogStatus.Failed,
+                    cancellationToken);
+                await PublishStageStateAsync(build, stageSession, force: true, cancellationToken);
 
                 if (uatExitCode != 0)
                 {
-                    await MarkFailedAsync(build, db, null, uatExitCode, cancellationToken);
+                    await MarkFailedAsync(build, db, null, uatExitCode, stageSession, cancellationToken);
                     return;
                 }
             }
@@ -374,6 +425,15 @@ public sealed class BuildOrchestrator(
             build.StatusMessage = AppText.ZippingArtifacts;
             await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "zip artifacts", cancellationToken);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-progress"));
+            await stageSession.StartStandaloneStageAsync(
+                BuildStageLogKind.Zip,
+                new ProcessCommand(
+                    "zip",
+                    Array.Empty<string>(),
+                    build.BuildRootPath,
+                    $"Zip archive from {build.ArchiveDirectoryPath} to {build.ZipFilePath}"),
+                cancellationToken);
+            await PublishStageStateAsync(build, stageSession, force: true, cancellationToken);
 
             if (!string.IsNullOrWhiteSpace(build.ZipFilePath))
             {
@@ -391,6 +451,9 @@ public sealed class BuildOrchestrator(
                 ZipFile.CreateFromDirectory(build.ArchiveDirectoryPath, tempZipPath);
                 File.Move(tempZipPath, build.ZipFilePath, true);
             }
+
+            await stageSession.CompleteActiveStagesAsync(BuildStageLogStatus.Completed, cancellationToken);
+            await PublishStageStateAsync(build, stageSession, force: true, cancellationToken);
 
             build.Status = BuildStatus.Succeeded;
             build.CurrentPhase = BuildPhase.Completed;
@@ -413,6 +476,8 @@ public sealed class BuildOrchestrator(
             build.ErrorSummary = runtime.CancellationReason ?? AppText.ServiceStoppingInterrupted;
             build.FinishedAtUtc = DateTimeOffset.UtcNow;
             build.DownloadUrl = null;
+            await stageSession.CompleteActiveStagesAsync(BuildStageLogStatus.Interrupted, CancellationToken.None);
+            await PublishStageStateAsync(build, stageSession, force: true, CancellationToken.None);
             await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "mark build interrupted", CancellationToken.None);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-finished"));
         }
@@ -426,6 +491,8 @@ public sealed class BuildOrchestrator(
             build.ErrorSummary = ex.Message;
             build.FinishedAtUtc = DateTimeOffset.UtcNow;
             build.DownloadUrl = null;
+            await stageSession.CompleteActiveStagesAsync(BuildStageLogStatus.Failed, CancellationToken.None);
+            await PublishStageStateAsync(build, stageSession, force: true, CancellationToken.None);
             await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "mark build crashed", CancellationToken.None);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-finished"));
         }
@@ -438,6 +505,8 @@ public sealed class BuildOrchestrator(
         StreamWriter writer,
         ProgressTracker progress,
         BuildDbContext db,
+        BuildStageLogService.BuildStageLogCaptureSession? stageSession,
+        bool trackUatStages,
         CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo(command.FileName)
@@ -513,18 +582,40 @@ public sealed class BuildOrchestrator(
                 }
             }
 
+            if (stageSession is not null)
+            {
+                if (trackUatStages)
+                {
+                    await stageSession.HandleUatLineAsync(line, build.CurrentPhase, command, cancellationToken);
+                }
+                else
+                {
+                    await stageSession.WriteStandaloneLineAsync(line, cancellationToken);
+                }
+
+                await PublishStageStateAsync(build, stageSession, force: false, cancellationToken);
+            }
+
             var shouldFlush = pendingLines.Count >= _logBatchSize || DateTime.UtcNow >= nextFlushAt;
             if (shouldFlush)
             {
                 await PublishLogChunkAsync(build, pendingLines, cancellationToken);
                 pendingLines.Clear();
                 nextFlushAt = DateTime.UtcNow.Add(_logFlushInterval);
+                if (stageSession is not null)
+                {
+                    await PublishStageStateAsync(build, stageSession, force: true, cancellationToken);
+                }
             }
         }
 
         if (pendingLines.Count > 0)
         {
             await PublishLogChunkAsync(build, pendingLines, cancellationToken);
+            if (stageSession is not null)
+            {
+                await PublishStageStateAsync(build, stageSession, force: true, cancellationToken);
+            }
         }
 
         try
@@ -583,13 +674,45 @@ public sealed class BuildOrchestrator(
             DateTimeOffset.UtcNow));
     }
 
+    private async Task PublishStageStateAsync(
+        BuildRecord build,
+        BuildStageLogService.BuildStageLogCaptureSession stageSession,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        var changed = stageSession.TryConsumeStateChanged();
+        if (!changed && !force)
+        {
+            return;
+        }
+
+        await stageSession.FlushAsync(cancellationToken);
+        var list = stageSession.ToListDto(build.Id);
+        await eventBroker.PublishAsync(new BuildEventEnvelope(
+            "build-stage-state",
+            build.Id,
+            new
+            {
+                buildId = build.Id,
+                stages = list.Stages
+            },
+            DateTimeOffset.UtcNow));
+    }
+
     private async Task MarkFailedAsync(
         BuildRecord build,
         BuildDbContext db,
         string? fallbackSummary,
         int exitCode,
+        BuildStageLogService.BuildStageLogCaptureSession? stageSession,
         CancellationToken cancellationToken)
     {
+        if (stageSession is not null)
+        {
+            await stageSession.CompleteActiveStagesAsync(BuildStageLogStatus.Failed, cancellationToken);
+            await PublishStageStateAsync(build, stageSession, force: true, cancellationToken);
+        }
+
         build.Status = BuildStatus.Failed;
         build.CurrentPhase = BuildPhase.Failed;
         build.StatusMessage = AppText.BuildFailed;
@@ -620,9 +743,17 @@ public sealed class BuildOrchestrator(
             build.StatusMessage = AppText.BuildInterrupted;
             build.ErrorSummary ??= AppText.ServiceRestartInterrupted;
             build.FinishedAtUtc = DateTimeOffset.UtcNow;
+            await buildStageLogService.MarkDanglingStagesAsync(build.BuildRootPath, BuildStageLogStatus.Interrupted, cancellationToken);
         }
 
         await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "recover interrupted builds", cancellationToken);
+
+        var queuedUbaBuilds = await db.Builds
+            .AsNoTracking()
+            .Where(build => build.Status == BuildStatus.Queued && build.UbaRemoteEnabled)
+            .ToListAsync(cancellationToken);
+        ubaAgentService.RebuildPortReservations(queuedUbaBuilds);
+
         await RefreshQueuedBuildsAsync(cancellationToken);
         await automationToolJanitor.CleanupIfSystemIdleAsync("Service startup recovery", cancellationToken);
     }
@@ -669,12 +800,27 @@ public sealed class BuildOrchestrator(
         _dispatchSignals.Writer.TryWrite(true);
     }
 
-    private static List<string> NormalizeExtraArgs(IEnumerable<string> defaults, IEnumerable<string>? extra)
+    private static List<string> NormalizeExtraArgs(BuildPlatform platform, IEnumerable<string> defaults, IEnumerable<string>? extra)
     {
-        return defaults
+        var mergedArgs = defaults
             .Concat(extra ?? Array.Empty<string>())
             .Select(item => item.Trim())
             .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToList();
+
+        if (platform == BuildPlatform.OpenHarmony)
+        {
+            mergedArgs = mergedArgs
+                .Where(item => !item.Equals("-nocompileeditor", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (!mergedArgs.Any(item => item.StartsWith("-ubtargs=", StringComparison.OrdinalIgnoreCase)))
+            {
+                mergedArgs.Add("-ubtargs=-NoHotReload -NoHotReloadFromIDE");
+            }
+        }
+
+        return mergedArgs
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
@@ -707,6 +853,27 @@ public sealed class BuildOrchestrator(
         if (trimmedLine.Length == 0 || BuildRegex.CommandPreview.IsMatch(trimmedLine))
         {
             return false;
+        }
+
+        static int GetPhaseOrder(BuildPhase phaseValue)
+        {
+            return phaseValue switch
+            {
+                BuildPhase.SourceSync => 1,
+                BuildPhase.Build => 2,
+                BuildPhase.Cook => 3,
+                BuildPhase.Stage => 4,
+                BuildPhase.Package => 5,
+                BuildPhase.Archive => 6,
+                BuildPhase.Zip => 7,
+                BuildPhase.Completed => 8,
+                _ => 0
+            };
+        }
+
+        static BuildPhase ClampPhaseForward(BuildPhase candidate, BuildPhase current)
+        {
+            return GetPhaseOrder(candidate) < GetPhaseOrder(current) ? current : candidate;
         }
 
         if (tracker.CurrentPhase == BuildPhase.SourceSync)
@@ -787,6 +954,8 @@ public sealed class BuildOrchestrator(
         {
             nextPercent = tracker.NextIncrementalPercent();
         }
+
+        nextPhase = ClampPhaseForward(nextPhase, tracker.CurrentPhase);
 
         var changed = nextPhase != tracker.CurrentPhase || nextPercent != tracker.CurrentPercent || nextMessage != tracker.Message;
         if (!changed)

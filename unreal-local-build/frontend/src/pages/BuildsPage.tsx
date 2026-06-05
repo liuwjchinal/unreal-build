@@ -3,10 +3,19 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { BuildStatusBadge } from '../components/BuildStatusBadge'
 import { formatDuration, formatPlatform, formatSvnRevision, formatUtc, parseTextAreaList } from '../components/formatters'
-import type { BuildPlatform, BuildSummaryDto, BuildTargetType, ProjectSummaryDto, QueueBuildRequest } from '../types/api'
+import type {
+  BuildAccelerator,
+  BuildPlatform,
+  BuildSummaryDto,
+  BuildTargetType,
+  ProjectSummaryDto,
+  QueueBuildRequest,
+} from '../types/api'
 
 const DEFAULT_TARGET: BuildTargetType = 'Game'
 const DEFAULT_PLATFORM: BuildPlatform = 'Windows'
+const DEFAULT_ACCELERATOR: BuildAccelerator = 'None'
+const GAME_ONLY_PLATFORMS: BuildPlatform[] = ['Android', 'OpenHarmony']
 
 export function BuildsPage() {
   const navigate = useNavigate()
@@ -17,6 +26,7 @@ export function BuildsPage() {
   const [platform, setPlatform] = useState<BuildPlatform>(DEFAULT_PLATFORM)
   const [targetType, setTargetType] = useState<BuildTargetType>(DEFAULT_TARGET)
   const [buildConfiguration, setBuildConfiguration] = useState('Development')
+  const [buildAccelerator, setBuildAccelerator] = useState<BuildAccelerator>(DEFAULT_ACCELERATOR)
   const [clean, setClean] = useState(false)
   const [pak, setPak] = useState(true)
   const [ioStore, setIoStore] = useState(true)
@@ -32,14 +42,23 @@ export function BuildsPage() {
 
   const availablePlatforms = useMemo<BuildPlatform[]>(() => {
     if (!selectedProject) {
-      return ['Windows', 'Android']
+      return ['Windows', 'Android', 'OpenHarmony']
     }
 
-    return selectedProject.androidEnabled ? ['Windows', 'Android'] : ['Windows']
+    const items: BuildPlatform[] = ['Windows']
+    if (selectedProject.androidEnabled) {
+      items.push('Android')
+    }
+
+    if (selectedProject.openHarmonyEnabled) {
+      items.push('OpenHarmony')
+    }
+
+    return items
   }, [selectedProject])
 
   const availableTargetTypes = useMemo<BuildTargetType[]>(
-    () => (platform === 'Android' ? ['Game'] : ['Game', 'Client', 'Server']),
+    () => (GAME_ONLY_PLATFORMS.includes(platform) ? ['Game'] : ['Game', 'Client', 'Server']),
     [platform],
   )
 
@@ -62,6 +81,12 @@ export function BuildsPage() {
       setPlatform('Windows')
     }
   }, [availablePlatforms, platform])
+
+  useEffect(() => {
+    if (platform !== 'Windows' && buildAccelerator === 'Uba') {
+      setBuildAccelerator('None')
+    }
+  }, [buildAccelerator, platform])
 
   useEffect(() => {
     if (!availableTargetTypes.includes(targetType)) {
@@ -87,6 +112,7 @@ export function BuildsPage() {
       if (projectItems.length > 0) {
         setProjectId(projectItems[0].id)
         setBuildConfiguration(projectItems[0].allowedBuildConfigurations[0] ?? 'Development')
+        setBuildAccelerator(projectItems[0].defaultBuildAccelerator ?? DEFAULT_ACCELERATOR)
       }
     } catch (err) {
       setError((err as Error).message)
@@ -119,6 +145,7 @@ export function BuildsPage() {
       platform,
       targetType,
       buildConfiguration,
+      buildAccelerator,
       clean,
       pak,
       ioStore,
@@ -156,7 +183,16 @@ export function BuildsPage() {
         <form className="form-grid" onSubmit={handleSubmit}>
           <label>
             项目
-            <select value={projectId} onChange={(event) => setProjectId(event.target.value)} required>
+            <select
+              value={projectId}
+              onChange={(event) => {
+                const nextProjectId = event.target.value
+                const nextProject = projects.find((project) => project.id === nextProjectId)
+                setProjectId(nextProjectId)
+                setBuildAccelerator(nextProject?.defaultBuildAccelerator ?? DEFAULT_ACCELERATOR)
+              }}
+              required
+            >
               {projects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.name}
@@ -198,6 +234,15 @@ export function BuildsPage() {
               ))}
             </select>
           </label>
+          <label>
+            构建加速器
+            <select value={buildAccelerator} onChange={(event) => setBuildAccelerator(event.target.value as BuildAccelerator)}>
+              <option value="None">关闭</option>
+              <option value="Uba" disabled={platform !== 'Windows'}>
+                UBA
+              </option>
+            </select>
+          </label>
           <label className="checkbox-row">
             <input type="checkbox" checked={clean} onChange={(event) => setClean(event.target.checked)} />
             Clean
@@ -218,6 +263,12 @@ export function BuildsPage() {
           {platform === 'Android' ? (
             <div className="span-two">
               <p className="muted-text">Android 第一版固定为 ASTC 测试包，只支持 Game Target。</p>
+            </div>
+          ) : null}
+
+          {platform === 'OpenHarmony' ? (
+            <div className="span-two">
+              <p className="muted-text">OpenHarmony 第一版复用 UE 项目现有 OpenHarmonyRuntimeSettings 与宿主机环境，只支持 Game Target。</p>
             </div>
           ) : null}
 
@@ -256,7 +307,7 @@ export function BuildsPage() {
                     </Link>
                   </div>
                   <p className="muted-text">
-                    {formatSvnRevision(build.revision)} / Target {build.targetName}
+                    {formatSvnRevision(build.revision)} / Target {build.targetName} / {build.buildAccelerator}
                   </p>
                 </div>
                 <div className="build-meta">

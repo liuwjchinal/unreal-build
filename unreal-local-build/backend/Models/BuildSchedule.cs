@@ -22,6 +22,8 @@ public sealed class BuildSchedule
 
     public string BuildConfiguration { get; set; } = "Development";
 
+    public BuildAccelerator BuildAccelerator { get; set; } = BuildAccelerator.None;
+
     public bool Clean { get; set; }
 
     public bool Pak { get; set; } = true;

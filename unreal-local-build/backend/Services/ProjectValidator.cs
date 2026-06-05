@@ -22,6 +22,9 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             platform: null,
             targetType: null,
             buildConfiguration: null,
+            buildAccelerator: null,
+            extraUatArgs: request.DefaultExtraUatArgs,
+            extraUatArgsErrorKey: nameof(request.DefaultExtraUatArgs),
             cancellationToken);
     }
 
@@ -42,8 +45,14 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             project.ServerTarget,
             project.AndroidEnabled,
             project.AndroidTextureFlavor,
+            project.OpenHarmonyEnabled,
+            project.DefaultBuildAccelerator,
             project.AllowedBuildConfigurations,
             project.DefaultExtraUatArgs);
+
+        var mergedExtraUatArgs = project.DefaultExtraUatArgs
+            .Concat(request.ExtraUatArgs ?? Enumerable.Empty<string>())
+            .ToList();
 
         return ValidateProjectCoreAsync(
             normalizedRequest,
@@ -52,6 +61,9 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             platform: request.Platform,
             targetType: request.TargetType,
             buildConfiguration: request.BuildConfiguration,
+            buildAccelerator: request.BuildAccelerator ?? project.DefaultBuildAccelerator,
+            extraUatArgs: mergedExtraUatArgs,
+            extraUatArgsErrorKey: nameof(request.ExtraUatArgs),
             cancellationToken);
     }
 
@@ -62,6 +74,9 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         BuildPlatform? platform,
         BuildTargetType? targetType,
         string? buildConfiguration,
+        BuildAccelerator? buildAccelerator,
+        IEnumerable<string>? extraUatArgs,
+        string extraUatArgsErrorKey,
         CancellationToken cancellationToken)
     {
         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -144,7 +159,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         {
             if (!BuildCommandFactory.SupportsTargetType(platform.Value, targetType.Value))
             {
-                Add(nameof(targetType), "Android 第一版只支持 Game。");
+                Add(nameof(targetType), GetPlatformGameOnlyMessage(platform.Value));
             }
             else
             {
@@ -171,6 +186,25 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             {
                 ValidateAndroidRequest(request, projectDirectory);
             }
+            else if (platform == BuildPlatform.OpenHarmony)
+            {
+                ValidateOpenHarmonyRequest(request, projectDirectory);
+            }
+        }
+
+        if (buildAccelerator == BuildAccelerator.Uba && platform.HasValue && platform.Value != BuildPlatform.Windows)
+        {
+            Add(nameof(buildAccelerator), "UE UBA 首版只支持 Windows C++ 构建加速。");
+        }
+
+        if (BuildCommandFactory.ContainsUbtArgs(extraUatArgs))
+        {
+            Add(extraUatArgsErrorKey, "请使用构建加速器开关，不要在额外 UAT 参数中手写 -ubtargs。");
+        }
+
+        if (BuildCommandFactory.ContainsNoUba(extraUatArgs))
+        {
+            Add(extraUatArgsErrorKey, "额外 UAT 参数中包含 -NoUBA，会与构建加速器设置冲突。");
         }
 
         await ValidateArchiveDirectoryAsync(request.ArchiveRootPath, errors, cancellationToken);
@@ -217,7 +251,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
                 }
             }
 
-            var javaHome = Environment.GetEnvironmentVariable("JAVA_HOME");
+            var javaHome = AndroidToolchain.ResolveJavaHome();
             if (string.IsNullOrWhiteSpace(javaHome) || !Directory.Exists(javaHome))
             {
                 Add(nameof(platform), "未检测到 JAVA_HOME。");
@@ -227,6 +261,40 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             if (string.IsNullOrWhiteSpace(ndkRoot) || !Directory.Exists(ndkRoot))
             {
                 Add(nameof(platform), "未检测到 Android NDK。请先配置 ANDROID_NDK_ROOT 或 NDKROOT。");
+            }
+        }
+
+        void ValidateOpenHarmonyRequest(UpsertProjectRequest source, string? sourceProjectDirectory)
+        {
+            if (!(source.OpenHarmonyEnabled ?? false))
+            {
+                Add(nameof(source.OpenHarmonyEnabled), "该项目未启用 OpenHarmony 构建。");
+            }
+
+            if (!OpenHarmonyToolchain.HasRuntimeSettings(sourceProjectDirectory))
+            {
+                Add(nameof(source.OpenHarmonyEnabled), "项目未检测到 OpenHarmonyRuntimeSettings 配置。请先在项目中启用 OpenHarmony 平台设置。");
+            }
+
+            var toolchain = OpenHarmonyToolchain.Validate(sourceProjectDirectory);
+            if (!toolchain.HasSdk)
+            {
+                Add(nameof(platform), "未检测到 OpenHarmony SDK。请在项目 OpenHarmony 配置中填写 SdkRootPath，或配置 OPENHARMONY_SDK_ROOT。");
+            }
+
+            if (!toolchain.HasHvigor)
+            {
+                Add(nameof(platform), "未检测到 hvigor。请在项目 OpenHarmony 配置中填写 HvigorPath，或配置 OPENHARMONY_HVIGOR_PATH / PATH。");
+            }
+
+            if (!toolchain.HasNode)
+            {
+                Add(nameof(platform), "未检测到 Node.js。请在项目 OpenHarmony 配置中填写 NodeHomePath，或配置 NODE_HOME / PATH。");
+            }
+
+            if (!toolchain.HasJava)
+            {
+                Add(nameof(platform), "未检测到 Java。请在项目 OpenHarmony 配置中填写 JavaHomePath，或配置 JAVA_HOME / PATH。");
             }
         }
 
@@ -284,7 +352,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         BuildPlatform platform,
         BuildTargetType targetType)
     {
-        if (platform == BuildPlatform.Android)
+        if (platform is BuildPlatform.Android or BuildPlatform.OpenHarmony)
         {
             return request.GameTarget ?? string.Empty;
         }
@@ -348,6 +416,16 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         }
 
         return false;
+    }
+
+    private static string GetPlatformGameOnlyMessage(BuildPlatform platform)
+    {
+        return platform switch
+        {
+            BuildPlatform.Android => "Android 第一版只支持 Game。",
+            BuildPlatform.OpenHarmony => "OpenHarmony 第一版只支持 Game。",
+            _ => "当前平台只支持 Game。"
+        };
     }
 
     private static string? ResolveAndroidSdkRoot()
@@ -580,7 +658,9 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             }
         }
 
-        var invalidStatusLine = statusLines.FirstOrDefault(IsInvalidSvnStatusLine);
+        var invalidStatusLine = statusLines.FirstOrDefault(line =>
+            IsInvalidSvnStatusLine(line) &&
+            !IsIgnorableMissingGeneratedStatusLine(line, workingCopyPath));
         if (invalidStatusLine is not null)
         {
             AddError(nameof(UpsertProjectRequest.WorkingCopyPath), $"SVN 工作副本存在异常状态：{invalidStatusLine}");
@@ -627,6 +707,26 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         return !string.IsNullOrWhiteSpace(line) && line[0] == '!';
     }
 
+    private static bool IsIgnorableMissingGeneratedStatusLine(string line, string workingCopyPath)
+    {
+        if (!IsMissingSvnStatusLine(line))
+        {
+            return false;
+        }
+
+        var path = TryExtractSvnStatusPath(line);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var fullPath = Path.IsPathRooted(path)
+            ? Path.GetFullPath(path)
+            : Path.GetFullPath(Path.Combine(workingCopyPath, path));
+
+        return IsGeneratedOutputPath(fullPath);
+    }
+
     private static List<string> ParseSvnStatusLines(string output)
     {
         return output
@@ -652,16 +752,24 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             return false;
         }
 
+        var ignoredGeneratedPaths = missingPaths
+            .Where(IsGeneratedOutputPath)
+            .ToList();
+
+        if (ignoredGeneratedPaths.Count > 0)
+        {
+            logger.LogInformation(
+                "Ignoring missing generated SVN items in {WorkingCopyPath}: {MissingPaths}",
+                workingCopyPath,
+                string.Join(", ", ignoredGeneratedPaths));
+        }
+
         var autoRepairCandidates = missingPaths
-            .Where(ShouldAutoRepairMissingPath)
+            .Where(path => !IsGeneratedOutputPath(path))
             .ToList();
 
         if (autoRepairCandidates.Count == 0)
         {
-            logger.LogInformation(
-                "Detected missing SVN items for {WorkingCopyPath}, but none matched auto-repair policy: {MissingPaths}",
-                workingCopyPath,
-                string.Join(", ", missingPaths));
             return false;
         }
 
@@ -689,7 +797,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         return line[8..].Trim();
     }
 
-    private static bool ShouldAutoRepairMissingPath(string fullPath)
+    private static bool IsGeneratedOutputPath(string fullPath)
     {
         var normalizedPath = fullPath.Replace('/', '\\');
         var fileName = Path.GetFileName(normalizedPath);

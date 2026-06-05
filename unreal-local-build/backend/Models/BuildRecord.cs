@@ -24,6 +24,8 @@ public sealed class BuildRecord
 
     public string BuildConfiguration { get; set; } = "Development";
 
+    public BuildAccelerator BuildAccelerator { get; set; } = BuildAccelerator.None;
+
     public bool Clean { get; set; }
 
     public bool Pak { get; set; } = true;
@@ -65,6 +67,28 @@ public sealed class BuildRecord
     public string? SvnCommandLine { get; set; }
 
     public string? UatCommandLine { get; set; }
+
+    public bool UbaRemoteEnabled { get; set; }
+
+    public string? UbaHost { get; set; }
+
+    public string? UbaListenHost { get; set; }
+
+    public int? UbaPort { get; set; }
+
+    public int? UbaAgentMaxIdleSeconds { get; set; }
+
+    public int? UbaAgentStoreCapacityGb { get; set; }
+
+    public int? UbaMaxWorkers { get; set; }
+
+    public string? UbaAgentJoinUrl { get; set; }
+
+    public string? UbaAgentManualCommand { get; set; }
+
+    public bool UbaHostAutoDetected { get; set; }
+
+    public string? UbaHostWarning { get; set; }
 
     public string DisplayRevision => StoragePaths.FormatSvnRevision(Revision);
 }

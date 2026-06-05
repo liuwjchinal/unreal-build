@@ -3,28 +3,51 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api, parseBuildEvent } from '../api/client'
 import { BuildStatusBadge } from '../components/BuildStatusBadge'
 import { formatDuration, formatPlatform, formatUtc } from '../components/formatters'
-import type { BuildDetailDto, BuildLogSnapshotDto } from '../types/api'
+import type {
+  BuildDetailDto,
+  BuildLogSnapshotDto,
+  BuildStageLogListDto,
+  BuildStageLogSnapshotDto,
+  BuildStageLogSummaryDto,
+} from '../types/api'
 
 const MAX_LOG_LINES = 4000
 const POLL_INTERVAL_MS = 5000
-const STREAM_RECONNECTING_MESSAGE = '实时连接短暂中断，正在自动重连...'
+const STREAM_RECONNECTING_MESSAGE = '实时连接短暂中断，正在自动重连。'
 const STREAM_FALLBACK_MESSAGE = '实时连接已断开，已切换为轮询刷新。'
+
+type LogMetaState = {
+  includedLines: number
+  totalLines: number
+  truncated: boolean
+}
 
 export function BuildDetailPage() {
   const { buildId } = useParams()
   const navigate = useNavigate()
   const [build, setBuild] = useState<BuildDetailDto | null>(null)
   const [logLines, setLogLines] = useState<string[]>([])
-  const [logMeta, setLogMeta] = useState({ includedLines: 0, totalLines: 0, truncated: false })
+  const [logMeta, setLogMeta] = useState<LogMetaState>({ includedLines: 0, totalLines: 0, truncated: false })
+  const [stages, setStages] = useState<BuildStageLogSummaryDto[]>([])
+  const [selectedStageKey, setSelectedStageKey] = useState<string | null>(null)
+  const [stageSnapshot, setStageSnapshot] = useState<BuildStageLogSnapshotDto | null>(null)
+  const [stageLoading, setStageLoading] = useState(false)
+  const [stageSearch, setStageSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [canceling, setCanceling] = useState(false)
   const [pageError, setPageError] = useState<string | null>(null)
   const [streamWarning, setStreamWarning] = useState<string | null>(null)
+  const [copyNotice, setCopyNotice] = useState<string | null>(null)
   const streamWarningRef = useRef<string | null>(null)
+  const selectedStageKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     streamWarningRef.current = streamWarning
   }, [streamWarning])
+
+  useEffect(() => {
+    selectedStageKeyRef.current = selectedStageKey
+  }, [selectedStageKey])
 
   useEffect(() => {
     if (!buildId) {
@@ -51,6 +74,48 @@ export function BuildDetailPage() {
       setBuild((current) => (current ? { ...current, logLineCount: snapshot.totalLines } : current))
     }
 
+    const applyStageList = (response: BuildStageLogListDto) => {
+      setStages(response.stages)
+      const selectedKey = selectedStageKeyRef.current
+      const hasSelected = selectedKey && response.stages.some((stage) => stage.stageKey === selectedKey)
+      if (!hasSelected) {
+        setSelectedStageKey(response.stages[0]?.stageKey ?? null)
+      }
+    }
+
+    const loadStageSnapshot = async (stageKey: string) => {
+      setStageLoading(true)
+      try {
+        const snapshot = await api.getBuildStageLog(buildId, stageKey, MAX_LOG_LINES)
+        if (!disposed) {
+          setStageSnapshot(snapshot)
+        }
+      } catch {
+        if (!disposed) {
+          setStageSnapshot(null)
+        }
+      } finally {
+        if (!disposed) {
+          setStageLoading(false)
+        }
+      }
+    }
+
+    const loadStageList = async () => {
+      try {
+        const response = await api.getBuildStageLogs(buildId)
+        if (!disposed) {
+          applyStageList(response)
+        }
+      } catch {
+        if (!disposed) {
+          setStages([])
+          setSelectedStageKey(null)
+          setStageSnapshot(null)
+        }
+      }
+    }
+
     const isActiveBuild = (value: BuildDetailDto | null) => value?.status === 'Queued' || value?.status === 'Running'
 
     const load = async () => {
@@ -66,6 +131,7 @@ export function BuildDetailPage() {
 
         applyBuildSnapshot(buildResponse)
         applyLogSnapshot(logResponse)
+        await loadStageList()
 
         eventSource = api.createBuildEventSource(buildId)
 
@@ -92,6 +158,7 @@ export function BuildDetailPage() {
                 const next = [...current, ...lines]
                 return next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next
               })
+
               setLogMeta((current) => {
                 const nextIncluded = Math.min(MAX_LOG_LINES, current.includedLines + lines.length)
                 const nextTotal = Number(envelope.payload.totalLines ?? current.totalLines)
@@ -101,6 +168,7 @@ export function BuildDetailPage() {
                   truncated: current.truncated || current.includedLines + lines.length > MAX_LOG_LINES,
                 }
               })
+
               setBuild((current) => {
                 if (!current) {
                   return current
@@ -113,6 +181,20 @@ export function BuildDetailPage() {
                 }
               })
             })
+
+            return
+          }
+
+          if (envelope.eventType === 'build-stage-state') {
+            const rawStages = Array.isArray(envelope.payload.stages) ? envelope.payload.stages : []
+            startTransition(() => {
+              applyStageList({ stages: rawStages as BuildStageLogSummaryDto[] })
+            })
+
+            const currentStageKey = selectedStageKeyRef.current
+            if (currentStageKey) {
+              void loadStageSnapshot(currentStageKey)
+            }
             return
           }
 
@@ -160,6 +242,7 @@ export function BuildDetailPage() {
         eventSource.addEventListener('build-status', handleBuildEvent as EventListener)
         eventSource.addEventListener('build-progress', handleBuildEvent as EventListener)
         eventSource.addEventListener('build-log', handleBuildEvent as EventListener)
+        eventSource.addEventListener('build-stage-state', handleBuildEvent as EventListener)
         eventSource.addEventListener('build-finished', handleBuildEvent as EventListener)
 
         pollTimer = window.setInterval(async () => {
@@ -177,15 +260,25 @@ export function BuildDetailPage() {
               !eventSource || eventSource.readyState !== EventSource.OPEN || streamWarningRef.current !== null
 
             if (isActiveBuild(latestBuild) && shouldSyncLog) {
-              const latestLog = await api.getBuildLog(buildId, MAX_LOG_LINES)
+              const [latestLog, latestStages] = await Promise.all([
+                api.getBuildLog(buildId, MAX_LOG_LINES),
+                api.getBuildStageLogs(buildId).catch(() => ({ stages: [] as BuildStageLogSummaryDto[] })),
+              ])
+
               if (disposed) {
                 return
               }
 
               startTransition(() => {
                 applyLogSnapshot(latestLog)
+                applyStageList(latestStages)
                 setStreamWarning((current) => current ?? STREAM_FALLBACK_MESSAGE)
               })
+
+              const currentStageKey = selectedStageKeyRef.current
+              if (currentStageKey) {
+                void loadStageSnapshot(currentStageKey)
+              }
             }
           } catch {
             if (!disposed) {
@@ -215,6 +308,38 @@ export function BuildDetailPage() {
     }
   }, [buildId])
 
+  useEffect(() => {
+    if (!buildId || !selectedStageKey) {
+      setStageSnapshot(null)
+      return
+    }
+
+    let disposed = false
+    setStageLoading(true)
+
+    api
+      .getBuildStageLog(buildId, selectedStageKey, MAX_LOG_LINES)
+      .then((snapshot) => {
+        if (!disposed) {
+          setStageSnapshot(snapshot)
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setStageSnapshot(null)
+        }
+      })
+      .finally(() => {
+        if (!disposed) {
+          setStageLoading(false)
+        }
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [buildId, selectedStageKey])
+
   async function handleCancel() {
     if (!buildId || !build) {
       return
@@ -236,7 +361,30 @@ export function BuildDetailPage() {
     }
   }
 
+  async function handleCopyManualCommand(command: string) {
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopyNotice('已复制手动启动命令。')
+    } catch {
+      setCopyNotice('复制失败，请手动选中命令复制。')
+    }
+  }
+
   const logContent = useMemo(() => logLines.join('\n'), [logLines])
+  const selectedStage = useMemo(
+    () => stages.find((stage) => stage.stageKey === selectedStageKey) ?? null,
+    [selectedStageKey, stages],
+  )
+  const stageLogLines = stageSnapshot?.lines ?? []
+  const filteredStageLines = useMemo(() => {
+    const query = stageSearch.trim().toLowerCase()
+    if (!query) {
+      return stageLogLines
+    }
+
+    return stageLogLines.filter((line) => line.toLowerCase().includes(query))
+  }, [stageLogLines, stageSearch])
+  const stageLogContent = useMemo(() => filteredStageLines.join('\n'), [filteredStageLines])
 
   if (loading) {
     return <p className="muted-text">正在加载构建详情...</p>
@@ -266,6 +414,23 @@ export function BuildDetailPage() {
   }
 
   const canCancel = build.status === 'Queued' || build.status === 'Running'
+  const canDownloadStageArchive = build.status !== 'Queued' && build.status !== 'Running' && stages.length > 0
+  const ubaManualCommand =
+    build.ubaAgentManualCommand ||
+    (build.ubaRemoteEnabled && build.ubaHost && build.ubaPort
+      ? `UbaAgent.exe -host=${build.ubaHost}:${build.ubaPort} -dir="%LOCALAPPDATA%\\UnrealLocalBuild\\UbaAgent\\Cache" -capacity=${build.ubaAgentStoreCapacityGb ?? 40} -maxidle=${build.ubaAgentMaxIdleSeconds ?? 120} -summary -quiet`
+      : '')
+  const ubaHostWarning =
+    build.ubaHostWarning ||
+    (build.ubaHostAutoDetected
+      ? `App:UbaPublicHost is not configured. Auto-detected ${build.ubaHost}; set App:UbaPublicHost if remote agents cannot connect.`
+      : '')
+  const canJoinUbaRemote =
+    build.status === 'Running' &&
+    build.currentPhase === 'Build' &&
+    build.ubaRemoteEnabled &&
+    Boolean(build.ubaAgentJoinUrl)
+  const ubaAgentPackageUrl = api.getUbaAgentPackageUrl(build.projectId)
 
   return (
     <div className="detail-layout">
@@ -365,13 +530,99 @@ export function BuildDetailPage() {
           </div>
         </div>
 
-        {build.downloadUrl ? (
-          <div className="form-actions">
+        <div className="uba-agent-panel">
+          <div className="section-title">
+            <div>
+              <p className="eyebrow">UBA Remote Agent</p>
+              <h3>远程编译加速</h3>
+            </div>
+            <span className={`status-pill ${build.ubaRemoteEnabled ? 'running' : 'queued'}`}>
+              {build.ubaRemoteEnabled ? '已启用' : '未启用'}
+            </span>
+          </div>
+
+          {build.ubaRemoteEnabled ? (
+            <>
+              <p className="muted-text">
+                先在辅助机下载并安装协议处理器，再点击“加速构建”。浏览器会打开 uba-agent:// 并启动辅助机本地 UbaAgent.exe。
+              </p>
+              <dl className="detail-grid uba-agent-grid">
+                <div>
+                  <dt>Host</dt>
+                  <dd>{build.ubaHost ?? '-'}</dd>
+                </div>
+                <div>
+                  <dt>Port</dt>
+                  <dd>{build.ubaPort ?? '-'}</dd>
+                </div>
+                <div>
+                  <dt>Listen Host</dt>
+                  <dd>{build.ubaListenHost ?? '0.0.0.0'}</dd>
+                </div>
+                <div>
+                  <dt>Agent Cache / Idle</dt>
+                  <dd>
+                    {build.ubaAgentStoreCapacityGb ?? 40} GB / {build.ubaAgentMaxIdleSeconds ?? 120}s
+                  </dd>
+                </div>
+                <div>
+                  <dt>Host Workers</dt>
+                  <dd>{build.ubaMaxWorkers ?? 4}</dd>
+                </div>
+                <div>
+                  <dt>Join URL</dt>
+                  <dd>{build.ubaAgentJoinUrl ?? '-'}</dd>
+                </div>
+                <div>
+                  <dt>当前可加入</dt>
+                  <dd>{canJoinUbaRemote ? '是' : '否，仅 Running + Build 阶段可加入'}</dd>
+                </div>
+              </dl>
+              {ubaHostWarning ? <p className="notice-text">{ubaHostWarning}</p> : null}
+              <div className="form-actions uba-agent-actions">
+                <a className="secondary-button" href={ubaAgentPackageUrl}>
+                  下载 UBA Agent 安装包
+                </a>
+                {canJoinUbaRemote ? (
+                  <a className="primary-button" href={build.ubaAgentJoinUrl ?? undefined}>
+                    加速构建
+                  </a>
+                ) : (
+                  <button type="button" className="primary-button" disabled>
+                    加速构建
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void handleCopyManualCommand(ubaManualCommand)}
+                  disabled={!ubaManualCommand}
+                >
+                  复制手动启动命令
+                </button>
+              </div>
+              {copyNotice ? <p className="notice-text">{copyNotice}</p> : null}
+              <pre className="uba-command">{ubaManualCommand || '-'}</pre>
+            </>
+          ) : (
+            <p className="muted-text">该构建未启用 UBA，不能加入远程 Agent。</p>
+          )}
+        </div>
+
+        <div className="form-actions">
+          {build.downloadUrl ? (
             <a className="primary-button" href={api.toDownloadUrl(build.downloadUrl) ?? undefined}>
               下载构建产物
             </a>
-          </div>
-        ) : null}
+          ) : (
+            <span />
+          )}
+          {canDownloadStageArchive ? (
+            <a className="secondary-button" href={api.toDownloadUrl(`/api/builds/${build.id}/stage-logs/download`) ?? undefined}>
+              下载全部阶段日志
+            </a>
+          ) : null}
+        </div>
 
         {build.errorSummary ? (
           <div className="error-panel">
@@ -385,7 +636,7 @@ export function BuildDetailPage() {
         <div className="section-title">
           <div>
             <p className="eyebrow">Live Log</p>
-            <h2>实时日志</h2>
+            <h2>实时总日志</h2>
           </div>
           <div className="metrics-inline">
             <span>显示 {logMeta.includedLines}</span>
@@ -393,8 +644,104 @@ export function BuildDetailPage() {
           </div>
         </div>
 
-        {logMeta.truncated ? <p className="muted-text">日志视图仅保留最近 4000 行，较早内容会自动裁剪。</p> : null}
+        {logMeta.truncated ? <p className="muted-text">总日志视图仅保留最近 4000 行，较早内容会自动裁剪。</p> : null}
         <pre className="log-viewer">{logContent || '暂无日志输出。'}</pre>
+      </section>
+
+      <section className="panel stage-log-panel">
+        <div className="section-title">
+          <div>
+            <p className="eyebrow">Stage Logs</p>
+            <h2>阶段日志</h2>
+          </div>
+          <div className="metrics-inline">
+            <span>阶段数 {stages.length}</span>
+            <span>当前 {selectedStage?.displayName ?? '-'}</span>
+          </div>
+        </div>
+
+        <div className="stage-log-layout">
+          <div className="stage-log-sidebar">
+            {stages.length === 0 ? (
+              <p className="muted-text">当前构建尚未生成阶段日志。</p>
+            ) : (
+              stages.map((stage) => (
+                <button
+                  key={stage.stageKey}
+                  type="button"
+                  className={`stage-item${selectedStageKey === stage.stageKey ? ' active' : ''}${stage.parentStageKey ? ' child' : ''}`}
+                  onClick={() => setSelectedStageKey(stage.stageKey)}
+                >
+                  <span>{stage.displayName}</span>
+                  <small>
+                    {stage.status} / {stage.logLineCount} 行
+                  </small>
+                </button>
+              ))
+            )}
+          </div>
+
+          <div className="stage-log-content">
+            {selectedStage ? (
+              <>
+                <div className="stage-log-toolbar">
+                  <div>
+                    <h3>{selectedStage.displayName}</h3>
+                    <p className="muted-text">
+                      {selectedStage.status} / {formatUtc(selectedStage.startedAtUtc)} - {formatUtc(selectedStage.finishedAtUtc)}
+                    </p>
+                  </div>
+                  <div className="card-actions">
+                    <a className="secondary-button" href={api.toDownloadUrl(selectedStage.logDownloadUrl) ?? undefined}>
+                      下载阶段日志
+                    </a>
+                  </div>
+                </div>
+
+                <label className="stage-search-label">
+                  <span>阶段日志查找</span>
+                  <input
+                    value={stageSearch}
+                    onChange={(event) => setStageSearch(event.target.value)}
+                    placeholder="输入关键字过滤当前阶段已加载日志"
+                  />
+                </label>
+
+                <div className="metrics-inline">
+                  <span>显示 {stageSnapshot?.includedLines ?? 0}</span>
+                  <span>总行数 {stageSnapshot?.totalLines ?? selectedStage.logLineCount}</span>
+                  {stageSearch ? <span>匹配 {filteredStageLines.length}</span> : null}
+                </div>
+
+                {selectedStage.inputArtifacts.length > 0 ? (
+                  <div className="artifact-list">
+                    {selectedStage.inputArtifacts.map((artifact) => (
+                      <a
+                        key={artifact.artifactKey}
+                        className="artifact-chip"
+                        href={api.toDownloadUrl(artifact.downloadUrl) ?? undefined}
+                      >
+                        {artifact.label}
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="muted-text">该阶段没有归档输入文件。</p>
+                )}
+
+                {stageSnapshot?.truncated ? (
+                  <p className="muted-text">阶段日志视图仅保留最近 4000 行，较早内容会自动裁剪。</p>
+                ) : null}
+
+                <pre className="log-viewer">
+                  {stageLoading ? '正在加载阶段日志...' : stageLogContent || '当前阶段暂无日志输出。'}
+                </pre>
+              </>
+            ) : (
+              <p className="muted-text">选择一个阶段以查看独立日志和输入归档。</p>
+            )}
+          </div>
+        </div>
       </section>
     </div>
   )

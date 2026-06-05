@@ -42,6 +42,7 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.Property(project => project.ClientTarget).HasMaxLength(200);
             entity.Property(project => project.ServerTarget).HasMaxLength(200);
             entity.Property(project => project.AndroidTextureFlavor).HasMaxLength(50);
+            entity.Property(project => project.DefaultBuildAccelerator).HasConversion<string>().HasMaxLength(50);
             entity.Property(project => project.AllowedBuildConfigurations)
                 .HasConversion(stringListConverter)
                 .Metadata.SetValueComparer(stringListComparer);
@@ -61,6 +62,7 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.Property(build => build.Platform).HasConversion<string>();
             entity.Property(build => build.TargetType).HasConversion<string>();
             entity.Property(build => build.TriggerSource).HasConversion<string>();
+            entity.Property(build => build.BuildAccelerator).HasConversion<string>().HasMaxLength(50);
             entity.Property(build => build.LogFilePath).HasMaxLength(1000);
             entity.Property(build => build.BuildRootPath).HasMaxLength(1000);
             entity.Property(build => build.ArchiveDirectoryPath).HasMaxLength(1000);
@@ -73,6 +75,11 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.Property(build => build.ErrorSummary).HasMaxLength(4000);
             entity.Property(build => build.SvnCommandLine).HasMaxLength(4000);
             entity.Property(build => build.UatCommandLine).HasMaxLength(4000);
+            entity.Property(build => build.UbaHost).HasMaxLength(200);
+            entity.Property(build => build.UbaListenHost).HasMaxLength(200);
+            entity.Property(build => build.UbaAgentJoinUrl).HasMaxLength(1000);
+            entity.Property(build => build.UbaAgentManualCommand).HasMaxLength(1000);
+            entity.Property(build => build.UbaHostWarning).HasMaxLength(1000);
             entity.Property(build => build.ExtraUatArgs)
                 .HasConversion(stringListConverter)
                 .Metadata.SetValueComparer(stringListComparer);
@@ -95,6 +102,7 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.Property(schedule => schedule.TimeOfDayLocal).HasMaxLength(5);
             entity.Property(schedule => schedule.Platform).HasConversion<string>();
             entity.Property(schedule => schedule.TargetType).HasConversion<string>();
+            entity.Property(schedule => schedule.BuildAccelerator).HasConversion<string>().HasMaxLength(50);
             entity.Property(schedule => schedule.BuildConfiguration).HasMaxLength(100);
             entity.Property(schedule => schedule.ExtraUatArgs)
                 .HasConversion(stringListConverter)

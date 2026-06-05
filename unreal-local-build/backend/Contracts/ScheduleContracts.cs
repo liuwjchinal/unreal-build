@@ -11,6 +11,7 @@ public sealed record UpsertBuildScheduleRequest(
     BuildPlatform Platform,
     BuildTargetType TargetType,
     string BuildConfiguration,
+    BuildAccelerator? BuildAccelerator,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -27,6 +28,7 @@ public sealed record BuildScheduleSummaryDto(
     BuildPlatform Platform,
     BuildTargetType TargetType,
     string BuildConfiguration,
+    BuildAccelerator BuildAccelerator,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -47,6 +49,7 @@ public sealed record BuildScheduleDetailDto(
     BuildPlatform Platform,
     BuildTargetType TargetType,
     string BuildConfiguration,
+    BuildAccelerator BuildAccelerator,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -86,6 +89,7 @@ public static class ScheduleContractMappings
         schedule.Platform = request.Platform;
         schedule.TargetType = request.TargetType;
         schedule.BuildConfiguration = request.BuildConfiguration.Trim();
+        schedule.BuildAccelerator = request.BuildAccelerator ?? BuildAccelerator.None;
         schedule.Clean = request.Clean;
         schedule.Pak = request.Pak;
         schedule.IoStore = request.IoStore;
@@ -106,6 +110,7 @@ public static class ScheduleContractMappings
             schedule.Platform,
             schedule.TargetType,
             schedule.BuildConfiguration,
+            schedule.BuildAccelerator,
             schedule.Clean,
             schedule.Pak,
             schedule.IoStore,
@@ -129,6 +134,7 @@ public static class ScheduleContractMappings
             schedule.Platform,
             schedule.TargetType,
             schedule.BuildConfiguration,
+            schedule.BuildAccelerator,
             schedule.Clean,
             schedule.Pak,
             schedule.IoStore,

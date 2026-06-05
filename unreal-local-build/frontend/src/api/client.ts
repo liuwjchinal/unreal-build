@@ -2,6 +2,8 @@ import type {
   BuildDetailDto,
   BuildEventEnvelope,
   BuildLogSnapshotDto,
+  BuildStageLogListDto,
+  BuildStageLogSnapshotDto,
   BuildScheduleDetailDto,
   BuildScheduleRunResultDto,
   BuildScheduleSummaryDto,
@@ -10,6 +12,7 @@ import type {
   ProjectConfigDto,
   ProjectSummaryDto,
   QueueBuildRequest,
+  UbaAgentConfigDto,
   UpsertBuildScheduleRequest,
   UpsertProjectRequest,
   ValidationProblemDetails,
@@ -32,9 +35,6 @@ function resolveRequestBase() {
     return DIRECT_BACKEND_ORIGIN
   }
 
-  // When this dev server is opened from another LAN machine, "localhost" would point
-  // to the client machine instead of the build host. In that case, go through Vite's
-  // same-origin /api proxy so requests stay on the build host.
   return isLoopbackHostname(window.location.hostname) ? DIRECT_BACKEND_ORIGIN : ''
 }
 
@@ -65,7 +65,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = (await response.json().catch(() => null)) as ValidationProblemDetails | null
     const details = body?.errors
       ? Object.entries(body.errors)
-          .map(([field, messages]) => `${field}: ${messages.join('；')}`)
+          .map(([field, messages]) => `${field}: ${messages.join(', ')}`)
           .join('\n')
       : body?.message || body?.title
     throw new Error(details || `请求失败: ${response.status}`)
@@ -90,6 +90,7 @@ export const api = {
     if (!response.ok) {
       throw new Error(`导出失败: ${response.status}`)
     }
+
     return response.blob()
   },
   importProjects(payload: UpsertProjectRequest[]) {
@@ -153,6 +154,7 @@ export const api = {
     if (projectId) {
       search.set('projectId', projectId)
     }
+
     search.set('limit', '100')
     return request<BuildSummaryDto[]>(`/api/builds?${search.toString()}`)
   },
@@ -178,6 +180,30 @@ export const api = {
 
     const suffix = search.size > 0 ? `?${search.toString()}` : ''
     return request<BuildLogSnapshotDto>(`/api/builds/${id}/log${suffix}`)
+  },
+  getBuildStageLogs(id: string) {
+    return request<BuildStageLogListDto>(`/api/builds/${id}/stage-logs`)
+  },
+  getBuildStageLog(id: string, stageKey: string, tailLines?: number) {
+    const search = new URLSearchParams()
+    if (tailLines && tailLines > 0) {
+      search.set('tailLines', String(tailLines))
+    }
+
+    const suffix = search.size > 0 ? `?${search.toString()}` : ''
+    return request<BuildStageLogSnapshotDto>(`/api/builds/${id}/stage-logs/${encodeURIComponent(stageKey)}${suffix}`)
+  },
+  getUbaAgentConfig() {
+    return request<UbaAgentConfigDto>('/api/uba-agent/config')
+  },
+  getUbaAgentPackageUrl(projectId?: string | null) {
+    const search = new URLSearchParams()
+    if (projectId) {
+      search.set('projectId', projectId)
+    }
+
+    const suffix = search.size > 0 ? `?${search.toString()}` : ''
+    return `${REQUEST_BASE}/api/uba-agent/package${suffix}`
   },
   createBuildEventSource(id: string) {
     return new EventSource(`${REQUEST_BASE}/api/builds/${id}/events`)

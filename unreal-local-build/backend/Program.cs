@@ -37,11 +37,13 @@ builder.Services.AddSingleton<BuildEventBroker>();
 builder.Services.AddSingleton<AutomationToolJanitor>();
 builder.Services.AddSingleton<ProjectValidator>();
 builder.Services.AddSingleton<BuildLogReader>();
+builder.Services.AddSingleton<BuildStageLogService>();
 builder.Services.AddSingleton<BuildLogAnalyzer>();
 builder.Services.AddSingleton<BuildScheduleRuntimeState>();
 builder.Services.AddSingleton<BuildScheduleValidator>();
 builder.Services.AddSingleton<BuildScheduleRunner>();
 builder.Services.AddSingleton<BuildScheduleService>();
+builder.Services.AddSingleton<UbaAgentService>();
 builder.Services.AddSingleton<BuildOrchestrator>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<BuildOrchestrator>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<BuildScheduleService>());
@@ -61,13 +63,21 @@ await using (var db = await app.Services.GetRequiredService<IDbContextFactory<Bu
     await SqliteExecution.ConfigureDatabaseAsync(db, CancellationToken.None);
 }
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseCors("dev-client");
-}
+app.UseCors("dev-client");
 
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        // This app is updated in-place during local development/deployment.
+        // Disable browser caching for static assets so the UI does not keep serving an older bundle
+        // after the backend has been rebuilt and restarted.
+        context.Context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+        context.Context.Response.Headers.Pragma = "no-cache";
+        context.Context.Response.Headers.Expires = "0";
+    }
+});
 
 var api = app.MapGroup("/api");
 
@@ -92,7 +102,7 @@ api.MapGet("/health", (BuildScheduleRuntimeState scheduleRuntimeState) =>
         cleanupArchiveDirectories = appOptions.CleanupArchiveDirectories,
         scheduleServiceEnabled = appOptions.ScheduleServiceEnabled,
         scheduleScanIntervalSeconds = appOptions.ScheduleScanIntervalSeconds,
-        supportedPlatforms = new[] { BuildPlatform.Windows, BuildPlatform.Android },
+        supportedPlatforms = new[] { BuildPlatform.Windows, BuildPlatform.Android, BuildPlatform.OpenHarmony },
         androidBuildFlavor = "ASTC",
         enabledScheduleCount = scheduleRuntimeState.EnabledScheduleCount,
         lastScheduleTickUtc = scheduleRuntimeState.LastScheduleTickUtc,
@@ -100,6 +110,46 @@ api.MapGet("/health", (BuildScheduleRuntimeState scheduleRuntimeState) =>
         buildCacheSizeBytes,
         buildCacheSizeGb
     });
+});
+
+api.MapGet("/uba-agent/config", (UbaAgentService ubaAgentService) =>
+{
+    return Results.Ok(ubaAgentService.CreateConfigDto());
+});
+
+api.MapGet("/uba-agent/package", async (
+    Guid? projectId,
+    UbaAgentService ubaAgentService,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    CancellationToken cancellationToken) =>
+{
+    ProjectConfig? project = null;
+    if (projectId.HasValue)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+        project = await db.Projects
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == projectId.Value, cancellationToken);
+
+        if (project is null)
+        {
+            return Results.NotFound();
+        }
+    }
+
+    try
+    {
+        var package = await ubaAgentService.CreateAgentPackageAsync(project, cancellationToken);
+        return Results.File(package.Bytes, "application/zip", package.FileName);
+    }
+    catch (DirectoryNotFoundException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status404NotFound);
+    }
+    catch (FileNotFoundException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status404NotFound);
+    }
 });
 
 api.MapGet("/projects", async (IDbContextFactory<BuildDbContext> dbFactory, CancellationToken cancellationToken) =>
@@ -131,6 +181,8 @@ api.MapGet("/projects/export", async (IDbContextFactory<BuildDbContext> dbFactor
             project.ServerTarget,
             project.AndroidEnabled,
             project.AndroidTextureFlavor,
+            project.OpenHarmonyEnabled,
+            project.DefaultBuildAccelerator,
             project.AllowedBuildConfigurations,
             project.DefaultExtraUatArgs))
         .ToListAsync(cancellationToken);
@@ -606,6 +658,145 @@ api.MapGet("/builds/{id:guid}/log", async (
     return Results.Ok(snapshot);
 });
 
+api.MapGet("/builds/{id:guid}/stage-logs", async (
+    Guid id,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    BuildStageLogService stageLogService,
+    CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var build = await db.Builds
+        .AsNoTracking()
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    if (build is null || !stageLogService.HasStageLogs(build))
+    {
+        return Results.NotFound();
+    }
+
+    var response = await stageLogService.ReadListAsync(build, cancellationToken);
+    return Results.Ok(response);
+});
+
+api.MapGet("/builds/{id:guid}/stage-logs/{stageKey}", async (
+    Guid id,
+    string stageKey,
+    int? tailLines,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    BuildStageLogService stageLogService,
+    CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var build = await db.Builds
+        .AsNoTracking()
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    if (build is null || !stageLogService.HasStageLogs(build))
+    {
+        return Results.NotFound();
+    }
+
+    var snapshot = await stageLogService.ReadStageLogAsync(
+        build,
+        stageKey,
+        tailLines ?? appOptions.DefaultLogTailLines,
+        cancellationToken);
+
+    return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
+});
+
+api.MapGet("/builds/{id:guid}/stage-logs/{stageKey}/download", async (
+    Guid id,
+    string stageKey,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    BuildStageLogService stageLogService,
+    CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var build = await db.Builds
+        .AsNoTracking()
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    if (build is null)
+    {
+        return Results.NotFound();
+    }
+
+    var resolved = await stageLogService.ResolveStageLogDownloadAsync(build, stageKey, cancellationToken);
+    if (resolved is null)
+    {
+        return Results.NotFound();
+    }
+
+    return Results.File(
+        resolved.Value.FilePath,
+        "text/plain; charset=utf-8",
+        $"{resolved.Value.Stage.StageKey}.log",
+        enableRangeProcessing: true);
+});
+
+api.MapGet("/builds/{id:guid}/stage-logs/{stageKey}/artifacts/{artifactKey}/download", async (
+    Guid id,
+    string stageKey,
+    string artifactKey,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    BuildStageLogService stageLogService,
+    CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var build = await db.Builds
+        .AsNoTracking()
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    if (build is null)
+    {
+        return Results.NotFound();
+    }
+
+    var resolved = await stageLogService.ResolveArtifactDownloadAsync(build, stageKey, artifactKey, cancellationToken);
+    if (resolved is null)
+    {
+        return Results.NotFound();
+    }
+
+    return Results.File(
+        resolved.Value.FilePath,
+        "application/octet-stream",
+        resolved.Value.Artifact.FileName,
+        enableRangeProcessing: true);
+});
+
+api.MapGet("/builds/{id:guid}/stage-logs/download", async (
+    Guid id,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    BuildStageLogService stageLogService,
+    CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var build = await db.Builds
+        .AsNoTracking()
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    if (build is null || !stageLogService.HasStageLogs(build))
+    {
+        return Results.NotFound();
+    }
+
+    if (build.Status is BuildStatus.Queued or BuildStatus.Running)
+    {
+        return Results.Problem("阶段日志仍在生成中。", statusCode: StatusCodes.Status409Conflict);
+    }
+
+    var stream = new MemoryStream();
+    await stageLogService.WriteArchiveToAsync(build, stream, cancellationToken);
+    stream.Position = 0;
+    return Results.File(
+        stream,
+        "application/zip",
+        BuildStageLogService.BuildArchiveDownloadFileName(build),
+        enableRangeProcessing: false);
+});
+
 api.MapGet("/builds/{id:guid}/download", async (
     Guid id,
     IDbContextFactory<BuildDbContext> dbFactory,
@@ -663,7 +854,15 @@ api.MapGet("/builds/{id:guid}/events", async (
 
 if (File.Exists(Path.Combine(app.Environment.WebRootPath ?? string.Empty, "index.html")))
 {
-    app.MapFallbackToFile("index.html");
+    app.MapFallbackToFile("index.html", new StaticFileOptions
+    {
+        OnPrepareResponse = context =>
+        {
+            context.Context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+            context.Context.Response.Headers.Pragma = "no-cache";
+            context.Context.Response.Headers.Expires = "0";
+        }
+    });
 }
 
 app.Logger.LogInformation("Backend listening on {ServerUrl}", appOptions.ServerUrl);
@@ -747,3 +946,5 @@ static string FlattenValidationErrors(Dictionary<string, string[]> errors)
         Environment.NewLine,
         errors.SelectMany(pair => pair.Value.Select(message => $"{pair.Key}: {message}")));
 }
+
+public partial class Program;

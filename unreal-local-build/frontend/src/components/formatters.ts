@@ -52,5 +52,12 @@ export function formatSvnRevision(value?: string | null) {
 }
 
 export function formatPlatform(platform: BuildPlatform) {
-  return platform === 'Android' ? 'Android' : 'Windows'
+  switch (platform) {
+    case 'Android':
+      return 'Android'
+    case 'OpenHarmony':
+      return 'OpenHarmony'
+    default:
+      return 'Windows'
+  }
 }

@@ -1,0 +1,1 @@
+declare const __LOCAL_BUILD_BACKEND_ORIGIN__: string

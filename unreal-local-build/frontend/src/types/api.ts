@@ -13,13 +13,15 @@ export type BuildPhase =
   | 'Failed'
   | 'Interrupted'
 
-export type BuildPlatform = 'Windows' | 'Android'
+export type BuildPlatform = 'Windows' | 'Android' | 'OpenHarmony'
 
 export type BuildTargetType = 'Game' | 'Client' | 'Server'
 
 export type BuildTriggerSource = 'Manual' | 'Schedule'
 
 export type BuildScheduleScopeType = 'SingleProject' | 'AllProjects'
+
+export type BuildAccelerator = 'None' | 'Uba'
 
 export interface ProjectSummaryDto {
   id: string
@@ -34,6 +36,8 @@ export interface ProjectSummaryDto {
   serverTarget?: string | null
   androidEnabled?: boolean | null
   androidTextureFlavor?: string | null
+  openHarmonyEnabled?: boolean | null
+  defaultBuildAccelerator: BuildAccelerator
   allowedBuildConfigurations: string[]
   defaultExtraUatArgs: string[]
   createdAtUtc: string
@@ -53,6 +57,8 @@ export interface ProjectConfigDto {
   serverTarget?: string | null
   androidEnabled: boolean
   androidTextureFlavor: string
+  openHarmonyEnabled: boolean
+  defaultBuildAccelerator: BuildAccelerator
   allowedBuildConfigurations: string[]
   defaultExtraUatArgs: string[]
   createdAtUtc: string
@@ -71,6 +77,8 @@ export interface UpsertProjectRequest {
   serverTarget?: string | null
   androidEnabled: boolean
   androidTextureFlavor: string
+  openHarmonyEnabled: boolean
+  defaultBuildAccelerator: BuildAccelerator
   allowedBuildConfigurations: string[]
   defaultExtraUatArgs: string[]
 }
@@ -95,6 +103,7 @@ export interface QueueBuildRequest {
   platform: BuildPlatform
   targetType: BuildTargetType
   buildConfiguration: string
+  buildAccelerator?: BuildAccelerator | null
   clean: boolean
   pak: boolean
   ioStore: boolean
@@ -112,6 +121,7 @@ export interface BuildSummaryDto {
   targetType: BuildTargetType
   targetName: string
   buildConfiguration: string
+  buildAccelerator: BuildAccelerator
   status: BuildStatus
   currentPhase: BuildPhase
   progressPercent: number
@@ -133,9 +143,84 @@ export interface BuildDetailDto extends BuildSummaryDto {
   logLineCount: number
   svnCommandPreview?: string | null
   uatCommandPreview?: string | null
+  ubaRemoteEnabled: boolean
+  ubaHost?: string | null
+  ubaListenHost?: string | null
+  ubaPort?: number | null
+  ubaAgentMaxIdleSeconds?: number | null
+  ubaAgentStoreCapacityGb?: number | null
+  ubaMaxWorkers?: number | null
+  ubaAgentJoinUrl?: string | null
+  ubaAgentManualCommand?: string | null
+  ubaHostAutoDetected: boolean
+  ubaHostWarning?: string | null
+}
+
+export interface UbaAgentConfigDto {
+  enabled: boolean
+  host: string
+  port: number
+  maxIdleSeconds: number
+  storeCapacityGb: number
+  maxWorkers: number
+  packageDownloadUrl: string
+  protocolExampleUrl: string
+  manualCommandExample: string
+  hostAutoDetected: boolean
+  hostWarning?: string | null
+  portPoolSize: number
 }
 
 export interface BuildLogSnapshotDto {
+  lines: string[]
+  includedLines: number
+  totalLines: number
+  truncated: boolean
+}
+
+export type BuildStageLogKind =
+  | 'SourceSync'
+  | 'Build'
+  | 'Cook'
+  | 'Stage'
+  | 'Package'
+  | 'Archive'
+  | 'Zip'
+  | 'UBT'
+  | 'Pak'
+  | 'IoStore'
+
+export type BuildStageLogStatus = 'Running' | 'Completed' | 'Failed' | 'Interrupted'
+
+export interface BuildStageArtifactDto {
+  artifactKey: string
+  label: string
+  category: string
+  fileName: string
+  sizeBytes: number
+  downloadUrl: string
+}
+
+export interface BuildStageLogSummaryDto {
+  stageKey: string
+  kind: BuildStageLogKind
+  displayName: string
+  parentStageKey?: string | null
+  order: number
+  status: BuildStageLogStatus
+  startedAtUtc: string
+  finishedAtUtc?: string | null
+  logLineCount: number
+  logDownloadUrl: string
+  inputArtifacts: BuildStageArtifactDto[]
+}
+
+export interface BuildStageLogListDto {
+  stages: BuildStageLogSummaryDto[]
+}
+
+export interface BuildStageLogSnapshotDto {
+  stage: BuildStageLogSummaryDto
   lines: string[]
   includedLines: number
   totalLines: number
@@ -151,6 +236,7 @@ export interface UpsertBuildScheduleRequest {
   platform: BuildPlatform
   targetType: BuildTargetType
   buildConfiguration: string
+  buildAccelerator?: BuildAccelerator | null
   clean: boolean
   pak: boolean
   ioStore: boolean
@@ -168,6 +254,7 @@ export interface BuildScheduleSummaryDto {
   platform: BuildPlatform
   targetType: BuildTargetType
   buildConfiguration: string
+  buildAccelerator: BuildAccelerator
   clean: boolean
   pak: boolean
   ioStore: boolean
@@ -198,7 +285,7 @@ export interface ValidationProblemDetails {
 }
 
 export interface BuildEventEnvelope {
-  eventType: 'build-status' | 'build-progress' | 'build-log' | 'build-finished' | 'heartbeat'
+  eventType: 'build-status' | 'build-progress' | 'build-log' | 'build-stage-state' | 'build-finished' | 'heartbeat'
   buildId: string
   payload: Record<string, unknown>
   occurredAtUtc: string

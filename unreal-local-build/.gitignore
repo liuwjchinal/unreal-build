@@ -3,5 +3,10 @@ backend/obj/
 backend/AppData/
 backend/wwwroot/
 backend/*.user
+backend/backend-*.log
+backend.tests/bin/
+backend.tests/obj/
+backend.tests/AppData/
+_codex_obj/
 frontend/node_modules/
 frontend/dist/

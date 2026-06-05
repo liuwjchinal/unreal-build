@@ -43,4 +43,24 @@ public sealed class AppOptions
     public int ScheduleScanIntervalSeconds { get; init; } = 30;
 
     public string FrontendDevOrigin { get; init; } = "http://localhost:5173";
+
+    public bool UbaRemoteAgentEnabled { get; init; } = true;
+
+    public string UbaRemoteHost { get; init; } = "0.0.0.0";
+
+    public string UbaPublicHost { get; init; } = "";
+
+    public int UbaPort { get; init; } = 1345;
+
+    public int UbaPortPoolSize { get; init; } = 16;
+
+    public int UbaAgentMaxIdleSeconds { get; init; } = 120;
+
+    public int UbaAgentStoreCapacityGb { get; init; } = 40;
+
+    public int UbaMaxWorkers { get; init; } = 4;
+
+    public string UbaAgentPackageSourcePath { get; init; } = "";
+
+    public string UbaJoinScheme { get; init; } = "uba-agent";
 }

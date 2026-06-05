@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { formatPlatform, formatUtc, joinList, parseTextAreaList } from '../components/formatters'
 import type {
+  BuildAccelerator,
   BuildPlatform,
   BuildScheduleDetailDto,
   BuildScheduleScopeType,
@@ -20,11 +21,14 @@ interface ScheduleFormState {
   platform: BuildPlatform
   targetType: BuildTargetType
   buildConfiguration: string
+  buildAccelerator: BuildAccelerator
   clean: boolean
   pak: boolean
   ioStore: boolean
   extraUatArgs: string
 }
+
+const GAME_ONLY_PLATFORMS: BuildPlatform[] = ['Android', 'OpenHarmony']
 
 const EMPTY_FORM: ScheduleFormState = {
   name: '',
@@ -35,6 +39,7 @@ const EMPTY_FORM: ScheduleFormState = {
   platform: 'Windows',
   targetType: 'Game',
   buildConfiguration: 'Development',
+  buildAccelerator: 'None',
   clean: false,
   pak: true,
   ioStore: true,
@@ -60,18 +65,27 @@ export function SchedulesPage() {
 
   const availablePlatforms = useMemo<BuildPlatform[]>(() => {
     if (form.scopeType === 'AllProjects') {
-      return ['Windows', 'Android']
+      return ['Windows', 'Android', 'OpenHarmony']
     }
 
     if (!selectedProject) {
       return ['Windows']
     }
 
-    return selectedProject.androidEnabled ? ['Windows', 'Android'] : ['Windows']
+    const items: BuildPlatform[] = ['Windows']
+    if (selectedProject.androidEnabled) {
+      items.push('Android')
+    }
+
+    if (selectedProject.openHarmonyEnabled) {
+      items.push('OpenHarmony')
+    }
+
+    return items
   }, [form.scopeType, selectedProject])
 
   const availableTargetTypes = useMemo<BuildTargetType[]>(
-    () => (form.platform === 'Android' ? ['Game'] : ['Game', 'Client', 'Server']),
+    () => (GAME_ONLY_PLATFORMS.includes(form.platform) ? ['Game'] : ['Game', 'Client', 'Server']),
     [form.platform],
   )
 
@@ -105,6 +119,12 @@ export function SchedulesPage() {
       setForm((current) => ({ ...current, platform: 'Windows' }))
     }
   }, [availablePlatforms, form.platform])
+
+  useEffect(() => {
+    if (form.platform !== 'Windows' && form.buildAccelerator === 'Uba') {
+      setForm((current) => ({ ...current, buildAccelerator: 'None' }))
+    }
+  }, [form.buildAccelerator, form.platform])
 
   useEffect(() => {
     if (!availableTargetTypes.includes(form.targetType)) {
@@ -169,6 +189,7 @@ export function SchedulesPage() {
       platform: schedule.platform,
       targetType: schedule.targetType,
       buildConfiguration: schedule.buildConfiguration,
+      buildAccelerator: schedule.buildAccelerator,
       clean: schedule.clean,
       pak: schedule.pak,
       ioStore: schedule.ioStore,
@@ -205,6 +226,7 @@ export function SchedulesPage() {
       platform: form.platform,
       targetType: form.targetType,
       buildConfiguration: form.buildConfiguration,
+      buildAccelerator: form.buildAccelerator,
       clean: form.clean,
       pak: form.pak,
       ioStore: form.ioStore,
@@ -366,6 +388,18 @@ export function SchedulesPage() {
               ))}
             </select>
           </label>
+          <label>
+            构建加速器
+            <select
+              value={form.buildAccelerator}
+              onChange={(event) => setForm({ ...form, buildAccelerator: event.target.value as BuildAccelerator })}
+            >
+              <option value="None">关闭</option>
+              <option value="Uba" disabled={form.platform !== 'Windows'}>
+                UBA
+              </option>
+            </select>
+          </label>
           <label className="checkbox-row">
             <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
             启用任务
@@ -394,6 +428,11 @@ export function SchedulesPage() {
           {form.platform === 'Android' ? (
             <div className="span-two">
               <p className="muted-text">Android 第一版固定为 ASTC 测试包，只支持 Game。</p>
+            </div>
+          ) : null}
+          {form.platform === 'OpenHarmony' ? (
+            <div className="span-two">
+              <p className="muted-text">OpenHarmony 第一版复用 UE 项目现有 OpenHarmonyRuntimeSettings 与宿主机环境，只支持 Game。</p>
             </div>
           ) : null}
           <div className="form-actions span-two">
@@ -445,7 +484,7 @@ export function SchedulesPage() {
                 <div>
                   <dt>构建参数</dt>
                   <dd>
-                    {formatPlatform(schedule.platform)} / {schedule.targetType} / {schedule.buildConfiguration}
+                    {formatPlatform(schedule.platform)} / {schedule.targetType} / {schedule.buildConfiguration} / {schedule.buildAccelerator}
                   </dd>
                 </div>
                 <div>

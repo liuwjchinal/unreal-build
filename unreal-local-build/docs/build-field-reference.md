@@ -1,6 +1,6 @@
 # 构建系统字段说明
 
-本文档说明 [unreal-local-build](/D:/UnrealGit/unreal-build/unreal-local-build) 当前构建系统中的关键业务字段，重点覆盖新增的平台和 Android 相关字段。
+本文档说明 [unreal-local-build](/D:/UnrealGit/unreal-build/unreal-local-build) 当前构建系统中的关键业务字段，重点覆盖新增的平台以及 Android / OpenHarmony 相关字段。
 
 ## 项目配置字段
 
@@ -48,6 +48,36 @@
 - 预检只允许 `ASTC`，见 [`ProjectValidator.cs`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Services/ProjectValidator.cs#L105)
 - 命令工厂会把它转成 Android UAT 参数，见 [`BuildCommandFactory.cs`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Services/BuildCommandFactory.cs#L180)
 
+### `openHarmonyEnabled`
+
+- 所属模型：[`ProjectConfig.OpenHarmonyEnabled`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Models/ProjectConfig.cs#L31)
+- 前端表单：[`ProjectsPage.tsx`](/D:/UnrealGit/unreal-build/unreal-local-build/frontend/src/pages/ProjectsPage.tsx#L38)
+- 默认值：`false`
+
+含义：
+
+- 表示这个项目是否允许被本系统当成 OpenHarmony 可构建项目使用。
+- 这是本系统自己的业务开关，不是 Unreal 引擎原生字段。
+
+会影响的行为：
+
+- 构建页是否允许为该项目选择 `OpenHarmony` 平台
+- 后端是否允许 OpenHarmony 构建请求通过预检，见 [`ProjectValidator.cs`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Services/ProjectValidator.cs#L237)
+- “所有项目”的 OpenHarmony 定时任务是否会把该项目纳入候选，见 [`BuildScheduleRunner.cs`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Services/BuildScheduleRunner.cs#L190)
+- OpenHarmony 定时任务校验是否通过，见 [`BuildScheduleValidator.cs`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Services/BuildScheduleValidator.cs#L64)
+
+不会影响的行为：
+
+- 不会自动修改 Unreal 项目的 OpenHarmony 配置
+- 不会自动安装 OpenHarmony SDK / hvigor / Node.js / Java
+- 不会在 Web 中托管 `Hdc`、签名字段或 `ManualSignCommand`
+- 不会影响 Windows 或 Android 构建
+
+说明：
+
+- 新建项目默认 `openHarmonyEnabled = false`，必须显式开启后才会在 UI 和定时任务中作为可用平台出现。
+- 即使开启了该开关，真正入队时仍然需要通过 `OpenHarmonyRuntimeSettings` 和工具链轻量预检。
+
 ### `gameTarget / clientTarget / serverTarget`
 
 - 所属模型：[`ProjectConfig`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Models/ProjectConfig.cs#L19)
@@ -60,7 +90,9 @@
 
 - Windows 支持 `Game / Client / Server`
 - Android 第一版只支持 `Game`
-- Android 构建时会直接复用 `gameTarget`，见 [`BuildCommandFactory.cs`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Services/BuildCommandFactory.cs#L42)
+- OpenHarmony 第一版只支持 `Game`
+- Android 构建时会直接复用 `gameTarget`
+- OpenHarmony 构建时也会直接复用 `gameTarget`
 
 ## 构建请求与构建记录字段
 
@@ -76,6 +108,7 @@
 - 当前只支持：
   - `Windows`
   - `Android`
+  - `OpenHarmony`
 
 会影响的行为：
 
@@ -124,6 +157,16 @@
   - `-cookflavor=ASTC`
 - 见 [`BuildCommandFactory.cs`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Services/BuildCommandFactory.cs#L173)
 
+### OpenHarmony
+
+- 当前第一版只支持 `Game`
+- 命令固定包含：
+  - `-platform=OpenHarmony`
+  - `-clientconfig=<BuildConfiguration>`
+  - `-target=<GameTarget>`
+- 不复用 Android 的 `-targetplatform=...` 形式
+- 见 [`BuildCommandFactory.cs`](/D:/UnrealGit/unreal-build/unreal-local-build/backend/Services/BuildCommandFactory.cs#L154)
+
 ## 命名规则
 
 ### 下载产物文件名
@@ -138,7 +181,7 @@
 
 ### 归档目录名
 
-归档目录也会包含平台字段，避免 Windows 和 Android 构建结果混淆。
+归档目录也会包含平台字段，避免 Windows、Android 和 OpenHarmony 构建结果混淆。
 
 实现见：
 
@@ -148,5 +191,7 @@
 
 - 新建项目默认 `androidEnabled = true`
 - 新建项目默认 `androidTextureFlavor = ASTC`
+- 新建项目默认 `openHarmonyEnabled = false`
 - Android 第一版只支持 `Game`
-- 同一项目的 Windows / Android 构建继续串行，不允许并发互踩
+- OpenHarmony 第一版只支持 `Game`
+- 同一项目的 Windows / Android / OpenHarmony 构建继续串行，不允许并发互踩

@@ -103,6 +103,7 @@ public sealed class BuildScheduleRunner(
                 schedule.Platform,
                 schedule.TargetType,
                 schedule.BuildConfiguration,
+                schedule.BuildAccelerator,
                 schedule.Clean,
                 schedule.Pak,
                 schedule.IoStore,
@@ -187,6 +188,10 @@ public sealed class BuildScheduleRunner(
         {
             query = query.Where(item => item.AndroidEnabled);
         }
+        else if (schedule.Platform == BuildPlatform.OpenHarmony)
+        {
+            query = query.Where(item => item.OpenHarmonyEnabled);
+        }
 
         var projects = await query.ToListAsync(cancellationToken);
         return projects.Where(project => IsProjectCompatible(project, schedule)).ToList();
@@ -205,6 +210,11 @@ public sealed class BuildScheduleRunner(
         }
 
         if (schedule.Platform == BuildPlatform.Android && !project.AndroidEnabled)
+        {
+            return false;
+        }
+
+        if (schedule.Platform == BuildPlatform.OpenHarmony && !project.OpenHarmonyEnabled)
         {
             return false;
         }

@@ -9,6 +9,7 @@ public sealed record QueueBuildRequest(
     BuildPlatform Platform,
     BuildTargetType TargetType,
     string BuildConfiguration,
+    BuildAccelerator? BuildAccelerator,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -25,6 +26,7 @@ public sealed record BuildSummaryDto(
     BuildTargetType TargetType,
     string TargetName,
     string BuildConfiguration,
+    BuildAccelerator BuildAccelerator,
     BuildStatus Status,
     BuildPhase CurrentPhase,
     int ProgressPercent,
@@ -47,6 +49,7 @@ public sealed record BuildDetailDto(
     BuildTargetType TargetType,
     string TargetName,
     string BuildConfiguration,
+    BuildAccelerator BuildAccelerator,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -64,7 +67,18 @@ public sealed record BuildDetailDto(
     string? DownloadUrl,
     long LogLineCount,
     string? SvnCommandPreview,
-    string? UatCommandPreview);
+    string? UatCommandPreview,
+    bool UbaRemoteEnabled,
+    string? UbaHost,
+    string? UbaListenHost,
+    int? UbaPort,
+    int? UbaAgentMaxIdleSeconds,
+    int? UbaAgentStoreCapacityGb,
+    int? UbaMaxWorkers,
+    string? UbaAgentJoinUrl,
+    string? UbaAgentManualCommand,
+    bool UbaHostAutoDetected,
+    string? UbaHostWarning);
 
 public sealed record BuildLogSnapshotDto(
     IReadOnlyList<string> Lines,
@@ -87,6 +101,7 @@ public static class BuildContractMappings
             build.TargetType,
             build.TargetName,
             build.BuildConfiguration,
+            build.BuildAccelerator,
             build.Status,
             build.CurrentPhase,
             build.ProgressPercent,
@@ -112,6 +127,7 @@ public static class BuildContractMappings
             build.TargetType,
             build.TargetName,
             build.BuildConfiguration,
+            build.BuildAccelerator,
             build.Clean,
             build.Pak,
             build.IoStore,
@@ -129,7 +145,18 @@ public static class BuildContractMappings
             GetAvailableDownloadUrl(build),
             build.LogLineCount,
             BuildCommandFactory.CreateSvnPreview(build),
-            BuildCommandFactory.CreateUatPreview(build));
+            BuildCommandFactory.CreateUatPreview(build),
+            build.UbaRemoteEnabled,
+            build.UbaHost,
+            build.UbaListenHost,
+            build.UbaPort,
+            build.UbaAgentMaxIdleSeconds,
+            build.UbaAgentStoreCapacityGb,
+            build.UbaMaxWorkers,
+            build.UbaAgentJoinUrl,
+            build.UbaAgentManualCommand,
+            build.UbaHostAutoDetected,
+            build.UbaHostWarning);
     }
 
     private static string? GetAvailableDownloadUrl(BuildRecord build)

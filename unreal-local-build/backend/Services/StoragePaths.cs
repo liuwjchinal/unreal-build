@@ -72,6 +72,14 @@ public sealed class StoragePaths
 
     public string ResolveLogPath(Guid buildId) => Path.Combine(ResolveBuildRoot(buildId), "build.log");
 
+    public string ResolveStageLogsRoot(Guid buildId) => Path.Combine(ResolveBuildRoot(buildId), "stage-logs");
+
+    public string ResolveStageLogsRoot(string buildRootPath) => Path.Combine(buildRootPath, "stage-logs");
+
+    public string ResolveStageLogManifestPath(Guid buildId) => Path.Combine(ResolveStageLogsRoot(buildId), "manifest.json");
+
+    public string ResolveStageLogManifestPath(string buildRootPath) => Path.Combine(ResolveStageLogsRoot(buildRootPath), "manifest.json");
+
     public string ResolveZipPath(BuildRecord build, DateTimeOffset timestampUtc)
     {
         return Path.Combine(ResolveBuildRoot(build.Id), $"{BuildArtifactBaseName(build, timestampUtc)}.zip");

@@ -26,7 +26,12 @@ public sealed class BuildScheduleValidator(IDbContextFactory<BuildDbContext> dbF
 
         if (!BuildCommandFactory.SupportsTargetType(request.Platform, request.TargetType))
         {
-            Add(nameof(request.TargetType), "Android 定时任务只支持 Game。");
+            Add(nameof(request.TargetType), GetPlatformGameOnlyMessage(request.Platform));
+        }
+
+        if (request.BuildAccelerator == BuildAccelerator.Uba && request.Platform != BuildPlatform.Windows)
+        {
+            Add(nameof(request.BuildAccelerator), "UE UBA 首版只支持 Windows C++ 构建加速。");
         }
 
         if (request.ScopeType == BuildScheduleScopeType.SingleProject)
@@ -57,6 +62,16 @@ public sealed class BuildScheduleValidator(IDbContextFactory<BuildDbContext> dbF
             Add(nameof(request.ProjectId), "“所有项目”任务不能绑定单个项目。");
         }
 
+        if (BuildCommandFactory.ContainsUbtArgs(request.ExtraUatArgs))
+        {
+            Add(nameof(request.ExtraUatArgs), "不要在额外 UAT 参数中手动传递 -ubtargs。");
+        }
+
+        if (BuildCommandFactory.ContainsNoUba(request.ExtraUatArgs))
+        {
+            Add(nameof(request.ExtraUatArgs), "额外 UAT 参数中不能包含 -NoUBA。");
+        }
+
         return errors.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
 
         void ValidateProjectCompatibility(ProjectConfig project)
@@ -71,11 +86,26 @@ public sealed class BuildScheduleValidator(IDbContextFactory<BuildDbContext> dbF
                 Add(nameof(request.Platform), "该项目未启用 Android 构建。");
             }
 
+            if (request.Platform == BuildPlatform.OpenHarmony && !project.OpenHarmonyEnabled)
+            {
+                Add(nameof(request.Platform), "该项目未启用 OpenHarmony 构建。");
+            }
+
             var targetName = BuildCommandFactory.ResolveTargetName(project, request.Platform, request.TargetType);
             if (string.IsNullOrWhiteSpace(targetName))
             {
                 Add(nameof(request.TargetType), $"项目未配置 {request.Platform} / {request.TargetType} Target。");
             }
+        }
+
+        static string GetPlatformGameOnlyMessage(BuildPlatform platform)
+        {
+            return platform switch
+            {
+                BuildPlatform.Android => "Android 定时任务只支持 Game。",
+                BuildPlatform.OpenHarmony => "OpenHarmony 定时任务只支持 Game。",
+                _ => "当前平台只支持 Game。"
+            };
         }
 
         void AddIf(bool condition, string key, string message)

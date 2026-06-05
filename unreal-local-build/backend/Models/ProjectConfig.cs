@@ -28,6 +28,10 @@ public sealed class ProjectConfig
 
     public string AndroidTextureFlavor { get; set; } = "ASTC";
 
+    public bool OpenHarmonyEnabled { get; set; }
+
+    public BuildAccelerator DefaultBuildAccelerator { get; set; } = BuildAccelerator.None;
+
     public List<string> AllowedBuildConfigurations { get; set; } = new() { "Development", "Shipping" };
 
     public List<string> DefaultExtraUatArgs { get; set; } = new();

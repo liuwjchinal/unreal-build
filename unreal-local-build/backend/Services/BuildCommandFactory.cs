@@ -63,6 +63,7 @@ public static class BuildCommandFactory
                 _ => string.Empty
             },
             BuildPlatform.Android => project.GameTarget ?? string.Empty,
+            BuildPlatform.OpenHarmony => project.GameTarget ?? string.Empty,
             _ => string.Empty
         };
     }
@@ -88,6 +89,18 @@ public static class BuildCommandFactory
     }
 
     public static string GetDefaultAndroidTextureFlavor() => "ASTC";
+
+    public static bool ContainsUbtArgs(IEnumerable<string>? args)
+    {
+        return (args ?? Array.Empty<string>()).Any(arg =>
+            arg.TrimStart().StartsWith("-ubtargs", StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static bool ContainsNoUba(IEnumerable<string>? args)
+    {
+        return (args ?? Array.Empty<string>()).Any(arg =>
+            arg.Contains("-NoUBA", StringComparison.OrdinalIgnoreCase));
+    }
 
     private static List<string> BuildBaseUatArguments(ProjectConfig? project, BuildRecord build, bool includeArchiveDirectory)
     {
@@ -136,8 +149,52 @@ public static class BuildCommandFactory
         }
 
         arguments.Add(build.IoStore ? "-iostore" : "-skipiostore");
+        AppendUbtArgs(arguments, build);
         arguments.AddRange(build.ExtraUatArgs);
         return arguments;
+    }
+
+    private static void AppendUbtArgs(List<string> arguments, BuildRecord build)
+    {
+        if (build.BuildAccelerator != BuildAccelerator.Uba)
+        {
+            return;
+        }
+
+        var ubtArgs = new List<string>
+        {
+            "-UBA",
+            "-UBAPrintSummary"
+        };
+
+        if (build.UbaRemoteEnabled)
+        {
+            ubtArgs.Add($"-UBAHost={ResolveUbaListenHost(build)}");
+            if (build.UbaPort.HasValue)
+            {
+                ubtArgs.Add($"-UBAPort={build.UbaPort.Value}");
+            }
+
+            ubtArgs.Add($"-UBAStoreCapacityGb={ResolveUbaStoreCapacityGb(build)}");
+        }
+
+        ubtArgs.Add($"-UBAMaxWorkers={ResolveUbaMaxWorkers(build)}");
+        arguments.Add($"-ubtargs=\"{string.Join(' ', ubtArgs)}\"");
+    }
+
+    private static string ResolveUbaListenHost(BuildRecord build)
+    {
+        return string.IsNullOrWhiteSpace(build.UbaListenHost) ? "0.0.0.0" : build.UbaListenHost.Trim();
+    }
+
+    private static int ResolveUbaStoreCapacityGb(BuildRecord build)
+    {
+        return Math.Max(1, build.UbaAgentStoreCapacityGb ?? 40);
+    }
+
+    private static int ResolveUbaMaxWorkers(BuildRecord build)
+    {
+        return Math.Max(1, build.UbaMaxWorkers ?? 4);
     }
 
     private static void AppendPlatformArguments(List<string> arguments, ProjectConfig? project, BuildRecord build)
@@ -149,6 +206,9 @@ public static class BuildCommandFactory
                 return;
             case BuildPlatform.Android:
                 AppendAndroidArguments(arguments, project, build);
+                return;
+            case BuildPlatform.OpenHarmony:
+                AppendOpenHarmonyArguments(arguments, build);
                 return;
             default:
                 throw new NotSupportedException($"Unsupported build platform {build.Platform}.");
@@ -197,6 +257,18 @@ public static class BuildCommandFactory
 
         arguments.Add("-targetplatform=Android");
         arguments.Add($"-cookflavor={flavor.ToUpperInvariant()}");
+        arguments.Add($"-clientconfig={build.BuildConfiguration}");
+        arguments.Add($"-target={build.TargetName}");
+    }
+
+    private static void AppendOpenHarmonyArguments(List<string> arguments, BuildRecord build)
+    {
+        if (build.TargetType != BuildTargetType.Game)
+        {
+            throw new InvalidOperationException("OpenHarmony builds only support the Game target.");
+        }
+
+        arguments.Add("-platform=OpenHarmony");
         arguments.Add($"-clientconfig={build.BuildConfiguration}");
         arguments.Add($"-target={build.TargetName}");
     }

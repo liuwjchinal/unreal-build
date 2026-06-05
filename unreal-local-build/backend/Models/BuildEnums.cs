@@ -24,10 +24,33 @@ public enum BuildPhase
     Interrupted
 }
 
+public enum BuildStageLogKind
+{
+    SourceSync,
+    Build,
+    Cook,
+    Stage,
+    Package,
+    Archive,
+    Zip,
+    UBT,
+    Pak,
+    IoStore
+}
+
+public enum BuildStageLogStatus
+{
+    Running,
+    Completed,
+    Failed,
+    Interrupted
+}
+
 public enum BuildPlatform
 {
     Windows,
-    Android
+    Android,
+    OpenHarmony
 }
 
 public enum BuildTargetType
@@ -47,4 +70,10 @@ public enum BuildScheduleScopeType
 {
     SingleProject,
     AllProjects
+}
+
+public enum BuildAccelerator
+{
+    None,
+    Uba
 }

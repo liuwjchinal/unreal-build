@@ -40,11 +40,21 @@
 - 只做测试包，不做正式签名发布
 - 继续复用现有构建队列、日志、下载、定时任务和缓存清理
 
+### OpenHarmony 第一版
+
+- 只支持 `Game`
+- 使用 `RunUAT BuildCookRun -platform=OpenHarmony`
+- 继续复用 UE 项目中的 `OpenHarmonyRuntimeSettings` 和宿主机环境变量
+- Web 不托管 `SdkRootPath / HvigorPath / NodeHomePath / JavaHomePath / HdcPath / Signing* / ManualSignCommand`
+- 不做 `Client / Server`，不做 `deploy / run / smoke`
+- 继续复用现有构建队列、日志、下载、定时任务和缓存清理
+- 可以产出 `.hap`，但签名结果仍取决于 UE 项目配置；若未配置 inline signing 或 `ManualSignCommand`，可能得到 unsigned HAP
+
 ### 同一项目跨平台策略
 
-- 同一项目的 Windows / Android 构建继续串行
+- 同一项目的 Windows / Android / OpenHarmony 构建继续串行
 - 不拆独立工作副本
-- 不允许同一项目 Windows 和 Android 并发构建
+- 不允许同一项目 Windows、Android、OpenHarmony 并发构建
 - 来回切平台时构建时间通常会增加，这是正常现象
 
 ## 运行环境
@@ -66,21 +76,30 @@ Android 第一版额外要求：
   - `ANDROID_NDK_ROOT` 或 `NDKROOT`
   - `JAVA_HOME`
 
+OpenHarmony 第一版额外要求：
+- UE 项目 `Config/*.ini` 中存在 `[/Script/OpenHarmonyRuntimeSettings.OpenHarmonyRuntimeSettings]`
+- `GameTarget` 可解析
+- OpenHarmony SDK 可通过项目 `SdkRootPath` 或 `OPENHARMONY_SDK_ROOT` 找到
+- `hvigor` 可通过项目 `HvigorPath`、`OPENHARMONY_HVIGOR_PATH` 或 `PATH` 找到
+- `node` 可通过项目 `NodeHomePath`、`NODE_HOME` 或 `PATH` 找到
+- `java` 可通过项目 `JavaHomePath`、`JAVA_HOME` 或 `PATH` 找到
+- 首版不要求 `Hdc`
+- 首版不托管签名字段；是否得到可发布签名包仍由 UE 项目侧负责
+
 ## 重要升级说明
 
-这次 Android 平台改造把“平台”升级成了系统的一等字段。
+这次 OpenHarmony 接入沿用现有平台模型，并通过增量 migration 为项目表新增 `OpenHarmonyEnabled` 字段。
 
-按当前设计，**旧数据不做兼容**。升级新版本前，请先手动删除旧 SQLite 数据库，再重新录入项目配置和定时任务。
+按当前设计，**不需要删库重建**。升级后端后会自动执行数据库迁移。
 
 默认数据库路径：
 - [backend/AppData/unreal-build.db](./backend/AppData/unreal-build.db)
 
 升级步骤：
 1. 停止当前服务。
-2. 删除旧数据库文件 [backend/AppData/unreal-build.db](./backend/AppData/unreal-build.db)。
-3. 启动新版本后端服务。
-4. 重新录入项目配置。
-5. 重新录入定时任务。
+2. 启动新版本后端服务，等待自动执行 migration。
+3. 打开项目配置页，按需手动开启 `OpenHarmony`。
+4. 如有 OpenHarmony 定时任务需求，再新增或调整定时任务。
 
 ## 首次安装
 
@@ -223,6 +242,10 @@ dotnet run --project .\backend\Backend.csproj --no-build --no-launch-profile
   - 是否允许该项目构建 Android
 - `Android Texture Flavor`
   - Android 第一版固定为 `ASTC`
+- `启用 OpenHarmony 构建`
+  - 是否允许该项目构建 OpenHarmony
+  - 默认 `false`
+  - 只控制本系统是否把该项目视为可选 OpenHarmony 平台，不会替 UE 项目写入 SDK、签名或其他 OpenHarmony 设置
 
 ## 构建任务字段说明
 
@@ -233,10 +256,11 @@ dotnet run --project .\backend\Backend.csproj --no-build --no-launch-profile
 - `Revision`
   - `HEAD` 或指定 SVN 版本号
 - `平台`
-  - `Windows` 或 `Android`
+  - `Windows`、`Android` 或 `OpenHarmony`
 - `Target 类型`
   - Windows：`Game / Client / Server`
   - Android：只允许 `Game`
+  - OpenHarmony：只允许 `Game`
 - `构建配置`
   - 例如 `Development / Shipping`
 - `Clean`
@@ -268,6 +292,12 @@ dotnet run --project .\backend\Backend.csproj --no-build --no-launch-profile
 - `TargetPlatform`：`Android`
 - `CookFlavor`：`ASTC`
 
+### OpenHarmony
+
+- `Target 类型`：`Game`
+- 命令固定使用 `-platform=OpenHarmony`
+- 额外包含 `-clientconfig=<配置>` 与 `-target=<GameTarget>`
+
 ## 下载命名规则
 
 产物 zip 名称包含平台字段，命名格式为：
@@ -277,8 +307,9 @@ dotnet run --project .\backend\Backend.csproj --no-build --no-launch-profile
 示例：
 - `20260327-153000-LyraStarterGame-Windows-Development-Game-r12554.zip`
 - `20260327-153500-LyraStarterGame-Android-Development-Game-r12554.zip`
+- `20260509-103000-OpenHarmonySmoke-OpenHarmony-Development-Game-rHEAD.zip`
 
-Windows 和 Android 的归档目录名也会包含平台字段，避免人工查看时混淆。
+Windows、Android 和 OpenHarmony 的归档目录名也会包含平台字段，避免人工查看时混淆。
 
 ## 定时构建
 
@@ -286,7 +317,7 @@ Windows 和 Android 的归档目录名也会包含平台字段，避免人工查
 - 每日固定时间
 - 单项目定时构建
 - 全项目定时构建
-- Windows / Android 都可配置定时任务
+- Windows / Android / OpenHarmony 都可配置定时任务
 
 时间语义：
 - 使用部署机本地时间
@@ -345,7 +376,21 @@ Android 第一版会在入队前检查：
 - Android SDK / NDK / JDK 是否可用
 - Android SDK License 是否存在
 
-### 4. 下载产物是否支持断点续传？
+### 4. OpenHarmony 构建前会检查什么？
+
+OpenHarmony 第一版会在入队前检查：
+- 项目是否启用 OpenHarmony 构建
+- 是否只选择了 `Game`
+- 是否存在 `OpenHarmonyRuntimeSettings`
+- `GameTarget` 是否可解析
+- OpenHarmony SDK / hvigor / Node.js / Java 是否可通过项目配置、环境变量或 `PATH` 找到
+
+首版不会在 Web 层强制要求：
+- `Hdc`
+- 签名字段
+- `ManualSignCommand`
+
+### 5. 下载产物是否支持断点续传？
 
 支持。
 
@@ -364,12 +409,13 @@ Android 第一版会在入队前检查：
 
 ## 旧版项目配置 JSON 导入兼容
 
-- 旧版导出的项目配置 JSON 即使没有 `androidEnabled` 和 `androidTextureFlavor` 字段，当前版本也可以直接导入。
+- 旧版导出的项目配置 JSON 即使没有 `androidEnabled`、`androidTextureFlavor` 和 `openHarmonyEnabled` 字段，当前版本也可以直接导入。
 - 导入时会自动补默认值：
   - `androidEnabled = true`
   - `androidTextureFlavor = ASTC`
+  - `openHarmonyEnabled = false`
 - 这项兼容只针对“项目配置导入文件”。
-- 数据库升级策略仍然保持不变：升级 Android 版本时，继续按本文前面的说明手动删库重建。
+- 数据库升级策略改为增量 migration，本次 OpenHarmony 接入不要求删库。
 
 相关字段说明文档：
 
