@@ -11,6 +11,10 @@ public sealed record ProcessCommand(
 
 public static class BuildCommandFactory
 {
+    private const string AndroidMaxChunkSizeBytes = "1900000000";
+    private const string AndroidMaxIoStorePartitionSizeMb = "1900";
+    private const string AndroidOverflowObbFileLimit = "2";
+
     public static ProcessCommand CreateSvnCommand(ProjectConfig project, BuildRecord build)
     {
         var arguments = new List<string>
@@ -259,6 +263,31 @@ public static class BuildCommandFactory
         arguments.Add($"-cookflavor={flavor.ToUpperInvariant()}");
         arguments.Add($"-clientconfig={build.BuildConfiguration}");
         arguments.Add($"-target={build.TargetName}");
+        arguments.Add("-manifests");
+        AppendAndroidPackagingOverrides(arguments);
+    }
+
+    private static void AppendAndroidPackagingOverrides(List<string> arguments)
+    {
+        AddGameIniOverride("bGenerateChunks", "True");
+        AddGameIniOverride("bGenerateNoChunks", "False");
+        AddGameIniOverride("MaxChunkSize", AndroidMaxChunkSizeBytes);
+        AddGameIniOverride("MaxIoStorePartitionSizeMB", AndroidMaxIoStorePartitionSizeMb);
+        AddEngineIniOverride("bForceSmallOBBFiles", "False");
+        AddEngineIniOverride("bAllowLargeOBBFiles", "True");
+        AddEngineIniOverride("bAllowPatchOBBFile", "True");
+        AddEngineIniOverride("bAllowOverflowOBBFiles", "True");
+        AddEngineIniOverride("OverflowOBBFileLimit", AndroidOverflowObbFileLimit);
+
+        void AddGameIniOverride(string key, string value)
+        {
+            arguments.Add($"-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:{key}={value}");
+        }
+
+        void AddEngineIniOverride(string key, string value)
+        {
+            arguments.Add($"-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:{key}={value}");
+        }
     }
 
     private static void AppendOpenHarmonyArguments(List<string> arguments, BuildRecord build)

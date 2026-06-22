@@ -42,6 +42,42 @@ public sealed class BuildCommandFactoryTests
         Assert.DoesNotContain(command.Arguments, arg => arg.StartsWith("-ubtargs=", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void CreateUatCommand_AppendsAndroidLargeObbPackagingOverrides_WhenPlatformIsAndroid()
+    {
+        var project = CreateProject();
+        var build = CreateBuild(BuildAccelerator.None);
+        build.Platform = BuildPlatform.Android;
+
+        var command = BuildCommandFactory.CreateUatCommand(project, build);
+
+        Assert.Contains("-targetplatform=Android", command.Arguments);
+        Assert.Contains("-cookflavor=ASTC", command.Arguments);
+        Assert.Contains("-manifests", command.Arguments);
+        Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:bGenerateChunks=True", command.Arguments);
+        Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:bGenerateNoChunks=False", command.Arguments);
+        Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxChunkSize=1900000000", command.Arguments);
+        Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxIoStorePartitionSizeMB=1900", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bForceSmallOBBFiles=False", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowLargeOBBFiles=True", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowPatchOBBFile=True", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowOverflowOBBFiles=True", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:OverflowOBBFileLimit=2", command.Arguments);
+        Assert.NotNull(command.EnvironmentVariables);
+    }
+
+    [Fact]
+    public void CreateUatCommand_DoesNotAppendAndroidPackagingOverrides_WhenPlatformIsWindows()
+    {
+        var project = CreateProject();
+        var build = CreateBuild(BuildAccelerator.None);
+
+        var command = BuildCommandFactory.CreateUatCommand(project, build);
+
+        Assert.DoesNotContain(command.Arguments, arg => arg.StartsWith("-ini:Game:", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(command.Arguments, arg => arg.StartsWith("-ini:Engine:", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static ProjectConfig CreateProject()
     {
         var root = Path.Combine(Path.GetTempPath(), "backend-uba-command-tests", Guid.NewGuid().ToString("N"));

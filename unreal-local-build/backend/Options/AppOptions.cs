@@ -32,7 +32,7 @@ public sealed class AppOptions
 
     public int CleanupIntervalMinutes { get; init; } = 60;
 
-    public int KeepRecentSuccessfulBuildsPerProject { get; init; } = 3;
+    public int KeepRecentSuccessfulBuildsPerProject { get; init; } = 30;
 
     public int MaxBuildCacheSizeGb { get; init; } = 20;
 
