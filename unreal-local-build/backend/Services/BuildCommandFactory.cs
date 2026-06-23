@@ -11,9 +11,9 @@ public sealed record ProcessCommand(
 
 public static class BuildCommandFactory
 {
-    private const string AndroidMaxChunkSizeBytes = "1900000000";
-    private const string AndroidMaxIoStorePartitionSizeMb = "1900";
-    private const string AndroidOverflowObbFileLimit = "2";
+    private const string AndroidMaxChunkSizeBytes = "900000000";
+    private const string AndroidMaxIoStorePartitionSizeMb = "900";
+    private const string AndroidOverflowObbFileLimit = "16";
 
     public static ProcessCommand CreateSvnCommand(ProjectConfig project, BuildRecord build)
     {
@@ -273,8 +273,8 @@ public static class BuildCommandFactory
         AddGameIniOverride("bGenerateNoChunks", "False");
         AddGameIniOverride("MaxChunkSize", AndroidMaxChunkSizeBytes);
         AddGameIniOverride("MaxIoStorePartitionSizeMB", AndroidMaxIoStorePartitionSizeMb);
-        AddEngineIniOverride("bForceSmallOBBFiles", "False");
-        AddEngineIniOverride("bAllowLargeOBBFiles", "True");
+        AddEngineIniOverride("bForceSmallOBBFiles", "True");
+        AddEngineIniOverride("bAllowLargeOBBFiles", "False");
         AddEngineIniOverride("bAllowPatchOBBFile", "True");
         AddEngineIniOverride("bAllowOverflowOBBFiles", "True");
         AddEngineIniOverride("OverflowOBBFileLimit", AndroidOverflowObbFileLimit);

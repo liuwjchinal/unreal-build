@@ -43,7 +43,7 @@ public sealed class BuildCommandFactoryTests
     }
 
     [Fact]
-    public void CreateUatCommand_AppendsAndroidLargeObbPackagingOverrides_WhenPlatformIsAndroid()
+    public void CreateUatCommand_AppendsAndroidSplitObbPackagingOverrides_WhenPlatformIsAndroid()
     {
         var project = CreateProject();
         var build = CreateBuild(BuildAccelerator.None);
@@ -56,13 +56,13 @@ public sealed class BuildCommandFactoryTests
         Assert.Contains("-manifests", command.Arguments);
         Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:bGenerateChunks=True", command.Arguments);
         Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:bGenerateNoChunks=False", command.Arguments);
-        Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxChunkSize=1900000000", command.Arguments);
-        Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxIoStorePartitionSizeMB=1900", command.Arguments);
-        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bForceSmallOBBFiles=False", command.Arguments);
-        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowLargeOBBFiles=True", command.Arguments);
+        Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxChunkSize=900000000", command.Arguments);
+        Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxIoStorePartitionSizeMB=900", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bForceSmallOBBFiles=True", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowLargeOBBFiles=False", command.Arguments);
         Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowPatchOBBFile=True", command.Arguments);
         Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowOverflowOBBFiles=True", command.Arguments);
-        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:OverflowOBBFileLimit=2", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:OverflowOBBFileLimit=16", command.Arguments);
         Assert.NotNull(command.EnvironmentVariables);
     }
 
