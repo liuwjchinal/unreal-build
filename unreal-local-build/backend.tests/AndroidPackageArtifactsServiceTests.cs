@@ -25,7 +25,8 @@ public sealed class AndroidPackageArtifactsServiceTests
         await File.WriteAllTextAsync(obbPath, "obb", new UTF8Encoding(false));
         await File.WriteAllTextAsync(
             installBatPath,
-            "set PACKAGE=com.example.uestartergame" + Environment.NewLine,
+            "set PACKAGE=com.example.uestartergame" + Environment.NewLine +
+            "echo com.epicgames.unreal.GameActivity" + Environment.NewLine,
             new UTF8Encoding(false));
         await File.WriteAllTextAsync(Path.Combine(stagedPaks, "pakchunk0-Android_ASTC.pak"), "pak", new UTF8Encoding(false));
         await File.WriteAllTextAsync(Path.Combine(stagedPaks, "pakchunk0-Android_ASTC.utoc"), "utoc", new UTF8Encoding(false));

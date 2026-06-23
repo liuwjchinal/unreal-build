@@ -198,6 +198,14 @@ export function BuildDetailPage() {
             return
           }
 
+          if (envelope.eventType === 'build-finished') {
+            void api.getBuild(buildId).then((latestBuild) => {
+              if (!disposed) {
+                applyBuildSnapshot(latestBuild)
+              }
+            }).catch(() => undefined)
+          }
+
           setBuild((current) => {
             if (!current) {
               return current
