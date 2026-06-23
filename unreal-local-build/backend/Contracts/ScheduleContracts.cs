@@ -12,6 +12,7 @@ public sealed record UpsertBuildScheduleRequest(
     BuildTargetType TargetType,
     string BuildConfiguration,
     BuildAccelerator? BuildAccelerator,
+    AndroidPackagingMode? AndroidPackagingMode,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -29,6 +30,7 @@ public sealed record BuildScheduleSummaryDto(
     BuildTargetType TargetType,
     string BuildConfiguration,
     BuildAccelerator BuildAccelerator,
+    AndroidPackagingMode AndroidPackagingMode,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -50,6 +52,7 @@ public sealed record BuildScheduleDetailDto(
     BuildTargetType TargetType,
     string BuildConfiguration,
     BuildAccelerator BuildAccelerator,
+    AndroidPackagingMode AndroidPackagingMode,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -90,6 +93,7 @@ public static class ScheduleContractMappings
         schedule.TargetType = request.TargetType;
         schedule.BuildConfiguration = request.BuildConfiguration.Trim();
         schedule.BuildAccelerator = request.BuildAccelerator ?? BuildAccelerator.None;
+        schedule.AndroidPackagingMode = request.AndroidPackagingMode ?? AndroidPackagingMode.ExternalFilesIoStore;
         schedule.Clean = request.Clean;
         schedule.Pak = request.Pak;
         schedule.IoStore = request.IoStore;
@@ -111,6 +115,7 @@ public static class ScheduleContractMappings
             schedule.TargetType,
             schedule.BuildConfiguration,
             schedule.BuildAccelerator,
+            schedule.AndroidPackagingMode,
             schedule.Clean,
             schedule.Pak,
             schedule.IoStore,
@@ -135,6 +140,7 @@ public static class ScheduleContractMappings
             schedule.TargetType,
             schedule.BuildConfiguration,
             schedule.BuildAccelerator,
+            schedule.AndroidPackagingMode,
             schedule.Clean,
             schedule.Pak,
             schedule.IoStore,

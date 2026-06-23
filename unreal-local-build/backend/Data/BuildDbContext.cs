@@ -63,11 +63,14 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.Property(build => build.TargetType).HasConversion<string>();
             entity.Property(build => build.TriggerSource).HasConversion<string>();
             entity.Property(build => build.BuildAccelerator).HasConversion<string>().HasMaxLength(50);
+            entity.Property(build => build.AndroidPackagingMode).HasConversion<string>().HasMaxLength(50);
             entity.Property(build => build.LogFilePath).HasMaxLength(1000);
             entity.Property(build => build.BuildRootPath).HasMaxLength(1000);
             entity.Property(build => build.ArchiveDirectoryPath).HasMaxLength(1000);
             entity.Property(build => build.ZipFilePath).HasMaxLength(1000);
             entity.Property(build => build.DownloadUrl).HasMaxLength(500);
+            entity.Property(build => build.AndroidPackageManifestPath).HasMaxLength(1000);
+            entity.Property(build => build.AndroidInstallScriptPath).HasMaxLength(1000);
             entity.Property(build => build.TargetName).HasMaxLength(200);
             entity.Property(build => build.BuildConfiguration).HasMaxLength(100);
             entity.Property(build => build.Revision).HasMaxLength(100);
@@ -103,6 +106,7 @@ public sealed class BuildDbContext(DbContextOptions<BuildDbContext> options) : D
             entity.Property(schedule => schedule.Platform).HasConversion<string>();
             entity.Property(schedule => schedule.TargetType).HasConversion<string>();
             entity.Property(schedule => schedule.BuildAccelerator).HasConversion<string>().HasMaxLength(50);
+            entity.Property(schedule => schedule.AndroidPackagingMode).HasConversion<string>().HasMaxLength(50);
             entity.Property(schedule => schedule.BuildConfiguration).HasMaxLength(100);
             entity.Property(schedule => schedule.ExtraUatArgs)
                 .HasConversion(stringListConverter)

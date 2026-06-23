@@ -2,7 +2,7 @@ import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, parseBuildEvent } from '../api/client'
 import { BuildStatusBadge } from '../components/BuildStatusBadge'
-import { formatDuration, formatPlatform, formatUtc } from '../components/formatters'
+import { formatAndroidPackagingMode, formatBytes, formatDuration, formatPlatform, formatUtc } from '../components/formatters'
 import type {
   BuildDetailDto,
   BuildLogSnapshotDto,
@@ -415,6 +415,7 @@ export function BuildDetailPage() {
 
   const canCancel = build.status === 'Queued' || build.status === 'Running'
   const canDownloadStageArchive = build.status !== 'Queued' && build.status !== 'Running' && stages.length > 0
+  const androidPackage = build.androidPackage
   const ubaManualCommand =
     build.ubaAgentManualCommand ||
     (build.ubaRemoteEnabled && build.ubaHost && build.ubaPort
@@ -517,6 +518,12 @@ export function BuildDetailPage() {
               {build.pak ? 'Pak' : 'No Pak'} / {build.ioStore ? 'IoStore' : 'Skip IoStore'}
             </dd>
           </div>
+          {build.platform === 'Android' ? (
+            <div>
+              <dt>Android Packaging</dt>
+              <dd>{formatAndroidPackagingMode(build.androidPackagingMode)}</dd>
+            </div>
+          ) : null}
         </dl>
 
         <div className="command-blocks">
@@ -608,6 +615,54 @@ export function BuildDetailPage() {
             <p className="muted-text">该构建未启用 UBA，不能加入远程 Agent。</p>
           )}
         </div>
+
+        {androidPackage ? (
+          <div className="uba-agent-panel">
+            <div className="section-title">
+              <div>
+                <p className="eyebrow">Android External Data</p>
+                <h3>ExternalFilesDir Install</h3>
+              </div>
+              <span className="status-pill succeeded">{formatAndroidPackagingMode(build.androidPackagingMode)}</span>
+            </div>
+            <dl className="detail-grid">
+              <div>
+                <dt>Package</dt>
+                <dd>{androidPackage.packageName}</dd>
+              </div>
+              <div>
+                <dt>Runtime Project</dt>
+                <dd>{androidPackage.projectName}</dd>
+              </div>
+              <div>
+                <dt>APK</dt>
+                <dd>{formatBytes(androidPackage.apkSizeBytes)}</dd>
+              </div>
+              <div>
+                <dt>External Data</dt>
+                <dd>
+                  {formatBytes(androidPackage.totalDataSizeBytes)} / {androidPackage.fileCount} files
+                </dd>
+              </div>
+              <div>
+                <dt>Data Root</dt>
+                <dd>{androidPackage.dataRoot}</dd>
+              </div>
+              <div>
+                <dt>Generated</dt>
+                <dd>{formatUtc(androidPackage.generatedAtUtc)}</dd>
+              </div>
+            </dl>
+            <div className="form-actions uba-agent-actions">
+              <a className="secondary-button" href={api.toDownloadUrl(androidPackage.installerDownloadUrl) ?? undefined}>
+                Download install script
+              </a>
+              <a className="secondary-button" href={api.toDownloadUrl(androidPackage.manifestDownloadUrl) ?? undefined}>
+                Download manifest
+              </a>
+            </div>
+          </div>
+        ) : null}
 
         <div className="form-actions">
           {build.downloadUrl ? (

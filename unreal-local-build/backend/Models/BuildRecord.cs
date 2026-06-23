@@ -26,6 +26,8 @@ public sealed class BuildRecord
 
     public BuildAccelerator BuildAccelerator { get; set; } = BuildAccelerator.None;
 
+    public AndroidPackagingMode AndroidPackagingMode { get; set; } = AndroidPackagingMode.ExternalFilesIoStore;
+
     public bool Clean { get; set; }
 
     public bool Pak { get; set; } = true;
@@ -57,6 +59,10 @@ public sealed class BuildRecord
     public string? ZipFilePath { get; set; }
 
     public string? DownloadUrl { get; set; }
+
+    public string? AndroidPackageManifestPath { get; set; }
+
+    public string? AndroidInstallScriptPath { get; set; }
 
     public int? ExitCode { get; set; }
 

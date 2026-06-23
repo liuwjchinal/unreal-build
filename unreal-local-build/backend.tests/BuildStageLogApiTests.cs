@@ -127,6 +127,76 @@ public sealed class BuildStageLogApiTests
         Assert.Contains("stage-logs/build/artifacts/tool.log", archiveEntries);
     }
 
+    [Fact]
+    public async Task BuildDownload_ReturnsArchiveZip_WhenExistingZipWasCleaned()
+    {
+        await using var host = StageLogApiTestHost.Create();
+        var build = await host.SeedBuildAsync(BuildStatus.Succeeded, includeStageLogs: false, includeArtifact: false);
+        Directory.CreateDirectory(build.ArchiveDirectoryPath);
+        await File.WriteAllTextAsync(
+            Path.Combine(build.ArchiveDirectoryPath, "artifact.txt"),
+            "packaged content",
+            new UTF8Encoding(false));
+
+        var detailResponse = await host.Client.GetAsync($"/api/builds/{build.Id}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detail = await detailResponse.Content.ReadFromJsonAsync<BuildDetailDto>(ResponseJsonOptions);
+        Assert.NotNull(detail);
+        Assert.Equal($"/api/builds/{build.Id}/download", detail!.DownloadUrl);
+
+        var downloadResponse = await host.Client.GetAsync(detail.DownloadUrl);
+        downloadResponse.EnsureSuccessStatusCode();
+        var zipBytes = await downloadResponse.Content.ReadAsByteArrayAsync();
+        using var archiveStream = new MemoryStream(zipBytes);
+        using var archive = new ZipArchive(archiveStream, ZipArchiveMode.Read);
+        var entry = Assert.Single(archive.Entries);
+        Assert.Equal("artifact.txt", entry.FullName);
+    }
+
+    [Fact]
+    public async Task BuildDownload_AllowsConcurrentArchiveFallbackRequests()
+    {
+        await using var host = StageLogApiTestHost.Create();
+        var build = await host.SeedBuildAsync(BuildStatus.Succeeded, includeStageLogs: false, includeArtifact: false);
+        Directory.CreateDirectory(build.ArchiveDirectoryPath);
+        await File.WriteAllTextAsync(
+            Path.Combine(build.ArchiveDirectoryPath, "artifact.txt"),
+            "packaged content",
+            new UTF8Encoding(false));
+
+        var responses = await Task.WhenAll(Enumerable.Range(0, 4)
+            .Select(_ => host.Client.GetAsync($"/api/builds/{build.Id}/download")));
+
+        Assert.All(responses, response => response.EnsureSuccessStatusCode());
+        var zipBytes = await responses[0].Content.ReadAsByteArrayAsync();
+        using var archiveStream = new MemoryStream(zipBytes);
+        using var archive = new ZipArchive(archiveStream, ZipArchiveMode.Read);
+        var entry = Assert.Single(archive.Entries);
+        Assert.Equal("artifact.txt", entry.FullName);
+    }
+
+    [Fact]
+    public async Task BuildDownload_ReturnsNotFound_ForArchiveFallbackOutsideRecentRetention()
+    {
+        await using var host = StageLogApiTestHost.Create();
+        var olderBuild = await host.SeedBuildAsync(BuildStatus.Succeeded, includeStageLogs: false, includeArtifact: false);
+        Directory.CreateDirectory(olderBuild.ArchiveDirectoryPath);
+        await File.WriteAllTextAsync(
+            Path.Combine(olderBuild.ArchiveDirectoryPath, "old-artifact.txt"),
+            "old packaged content",
+            new UTF8Encoding(false));
+        await host.SeedSucceededBuildsAsync(olderBuild.ProjectId, count: 30, newerThanUtc: olderBuild.FinishedAtUtc!.Value);
+
+        var detailResponse = await host.Client.GetAsync($"/api/builds/{olderBuild.Id}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detail = await detailResponse.Content.ReadFromJsonAsync<BuildDetailDto>(ResponseJsonOptions);
+        Assert.NotNull(detail);
+        Assert.Null(detail!.DownloadUrl);
+
+        var downloadResponse = await host.Client.GetAsync($"/api/builds/{olderBuild.Id}/download");
+        Assert.Equal(HttpStatusCode.NotFound, downloadResponse.StatusCode);
+    }
+
     private static JsonSerializerOptions CreateResponseJsonOptions()
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
@@ -245,6 +315,53 @@ public sealed class BuildStageLogApiTests
             }
 
             return build;
+        }
+
+        public async Task SeedSucceededBuildsAsync(Guid projectId, int count, DateTimeOffset newerThanUtc)
+        {
+            using var scope = _factory.Services.CreateScope();
+            var storagePaths = scope.ServiceProvider.GetRequiredService<StoragePaths>();
+            var dbFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<BuildDbContext>>();
+
+            await using var db = await dbFactory.CreateDbContextAsync();
+            var project = await db.Projects.FirstAsync(item => item.Id == projectId);
+
+            for (var index = 0; index < count; index++)
+            {
+                var buildId = Guid.NewGuid();
+                var finishedAtUtc = newerThanUtc.AddMinutes(index + 1);
+                var buildRoot = storagePaths.ResolveBuildRoot(buildId);
+                Directory.CreateDirectory(buildRoot);
+                var zipPath = Path.Combine(buildRoot, $"newer-{index}.zip");
+                await File.WriteAllBytesAsync(zipPath, [0x50, 0x4B, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+                db.Builds.Add(new BuildRecord
+                {
+                    Id = buildId,
+                    ProjectId = project.Id,
+                    Project = project,
+                    Revision = "HEAD",
+                    TriggerSource = BuildTriggerSource.Manual,
+                    Platform = BuildPlatform.Windows,
+                    TargetType = BuildTargetType.Game,
+                    TargetName = "ApiTestTarget",
+                    BuildConfiguration = "Development",
+                    Status = BuildStatus.Succeeded,
+                    CurrentPhase = BuildPhase.Completed,
+                    ProgressPercent = 100,
+                    StatusMessage = "Finished",
+                    QueuedAtUtc = finishedAtUtc.AddMinutes(-5),
+                    StartedAtUtc = finishedAtUtc.AddMinutes(-4),
+                    FinishedAtUtc = finishedAtUtc,
+                    LogFilePath = storagePaths.ResolveLogPath(buildId),
+                    BuildRootPath = buildRoot,
+                    ArchiveDirectoryPath = Path.Combine(buildRoot, "archive"),
+                    DownloadUrl = $"/api/builds/{buildId}/download",
+                    ZipFilePath = zipPath
+                });
+            }
+
+            await db.SaveChangesAsync();
         }
 
         public ValueTask DisposeAsync()

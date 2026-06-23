@@ -14,6 +14,7 @@ public static class BuildCommandFactory
     private const string AndroidMaxChunkSizeBytes = "900000000";
     private const string AndroidMaxIoStorePartitionSizeMb = "900";
     private const string AndroidOverflowObbFileLimit = "16";
+    private const string AndroidExternalDataObbFilter = "-.../Content/Paks/...";
 
     public static ProcessCommand CreateSvnCommand(ProjectConfig project, BuildRecord build)
     {
@@ -264,20 +265,41 @@ public static class BuildCommandFactory
         arguments.Add($"-clientconfig={build.BuildConfiguration}");
         arguments.Add($"-target={build.TargetName}");
         arguments.Add("-manifests");
-        AppendAndroidPackagingOverrides(arguments);
+        AppendAndroidPackagingOverrides(arguments, build.AndroidPackagingMode);
     }
 
-    private static void AppendAndroidPackagingOverrides(List<string> arguments)
+    private static void AppendAndroidPackagingOverrides(
+        List<string> arguments,
+        AndroidPackagingMode packagingMode)
     {
         AddGameIniOverride("bGenerateChunks", "True");
         AddGameIniOverride("bGenerateNoChunks", "False");
         AddGameIniOverride("MaxChunkSize", AndroidMaxChunkSizeBytes);
         AddGameIniOverride("MaxIoStorePartitionSizeMB", AndroidMaxIoStorePartitionSizeMb);
-        AddEngineIniOverride("bForceSmallOBBFiles", "True");
-        AddEngineIniOverride("bAllowLargeOBBFiles", "False");
-        AddEngineIniOverride("bAllowPatchOBBFile", "True");
-        AddEngineIniOverride("bAllowOverflowOBBFiles", "True");
-        AddEngineIniOverride("OverflowOBBFileLimit", AndroidOverflowObbFileLimit);
+
+        switch (packagingMode)
+        {
+            case AndroidPackagingMode.ExternalFilesIoStore:
+                AddEngineIniOverride("bPackageDataInsideApk", "False");
+                AddEngineIniOverride("bUseExternalFilesDir", "True");
+                AddEngineIniOverride("+ObbFilters", AndroidExternalDataObbFilter);
+                break;
+            case AndroidPackagingMode.SplitObb:
+                AddEngineIniOverride("bPackageDataInsideApk", "False");
+                AddEngineIniOverride("bUseExternalFilesDir", "False");
+                AddEngineIniOverride("bForceSmallOBBFiles", "True");
+                AddEngineIniOverride("bAllowLargeOBBFiles", "False");
+                AddEngineIniOverride("bAllowPatchOBBFile", "True");
+                AddEngineIniOverride("bAllowOverflowOBBFiles", "True");
+                AddEngineIniOverride("OverflowOBBFileLimit", AndroidOverflowObbFileLimit);
+                break;
+            case AndroidPackagingMode.DataInsideApk:
+                AddEngineIniOverride("bPackageDataInsideApk", "True");
+                AddEngineIniOverride("bUseExternalFilesDir", "False");
+                break;
+            default:
+                throw new NotSupportedException($"Unsupported Android packaging mode {packagingMode}.");
+        }
 
         void AddGameIniOverride(string key, string value)
         {

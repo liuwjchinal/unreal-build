@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
-import { formatPlatform, formatUtc, joinList, parseTextAreaList } from '../components/formatters'
+import { formatAndroidPackagingMode, formatPlatform, formatUtc, joinList, parseTextAreaList } from '../components/formatters'
 import type {
+  AndroidPackagingMode,
   BuildAccelerator,
   BuildPlatform,
   BuildScheduleDetailDto,
@@ -22,6 +23,7 @@ interface ScheduleFormState {
   targetType: BuildTargetType
   buildConfiguration: string
   buildAccelerator: BuildAccelerator
+  androidPackagingMode: AndroidPackagingMode
   clean: boolean
   pak: boolean
   ioStore: boolean
@@ -29,6 +31,8 @@ interface ScheduleFormState {
 }
 
 const GAME_ONLY_PLATFORMS: BuildPlatform[] = ['Android', 'OpenHarmony']
+const DEFAULT_ANDROID_PACKAGING_MODE: AndroidPackagingMode = 'ExternalFilesIoStore'
+const ANDROID_PACKAGING_MODES: AndroidPackagingMode[] = ['ExternalFilesIoStore', 'SplitObb', 'DataInsideApk']
 
 const EMPTY_FORM: ScheduleFormState = {
   name: '',
@@ -40,6 +44,7 @@ const EMPTY_FORM: ScheduleFormState = {
   targetType: 'Game',
   buildConfiguration: 'Development',
   buildAccelerator: 'None',
+  androidPackagingMode: DEFAULT_ANDROID_PACKAGING_MODE,
   clean: false,
   pak: true,
   ioStore: true,
@@ -190,6 +195,7 @@ export function SchedulesPage() {
       targetType: schedule.targetType,
       buildConfiguration: schedule.buildConfiguration,
       buildAccelerator: schedule.buildAccelerator,
+      androidPackagingMode: schedule.androidPackagingMode ?? DEFAULT_ANDROID_PACKAGING_MODE,
       clean: schedule.clean,
       pak: schedule.pak,
       ioStore: schedule.ioStore,
@@ -227,6 +233,7 @@ export function SchedulesPage() {
       targetType: form.targetType,
       buildConfiguration: form.buildConfiguration,
       buildAccelerator: form.buildAccelerator,
+      androidPackagingMode: form.platform === 'Android' ? form.androidPackagingMode : null,
       clean: form.clean,
       pak: form.pak,
       ioStore: form.ioStore,
@@ -400,6 +407,21 @@ export function SchedulesPage() {
               </option>
             </select>
           </label>
+          {form.platform === 'Android' ? (
+            <label>
+              Android Packaging
+              <select
+                value={form.androidPackagingMode}
+                onChange={(event) => setForm({ ...form, androidPackagingMode: event.target.value as AndroidPackagingMode })}
+              >
+                {ANDROID_PACKAGING_MODES.map((item) => (
+                  <option key={item} value={item}>
+                    {formatAndroidPackagingMode(item)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label className="checkbox-row">
             <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
             启用任务
@@ -485,6 +507,7 @@ export function SchedulesPage() {
                   <dt>构建参数</dt>
                   <dd>
                     {formatPlatform(schedule.platform)} / {schedule.targetType} / {schedule.buildConfiguration} / {schedule.buildAccelerator}
+                    {schedule.platform === 'Android' ? ` / ${formatAndroidPackagingMode(schedule.androidPackagingMode)}` : ''}
                   </dd>
                 </div>
                 <div>

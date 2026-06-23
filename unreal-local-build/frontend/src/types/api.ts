@@ -23,6 +23,8 @@ export type BuildScheduleScopeType = 'SingleProject' | 'AllProjects'
 
 export type BuildAccelerator = 'None' | 'Uba'
 
+export type AndroidPackagingMode = 'ExternalFilesIoStore' | 'SplitObb' | 'DataInsideApk'
+
 export interface ProjectSummaryDto {
   id: string
   projectKey: string
@@ -104,6 +106,7 @@ export interface QueueBuildRequest {
   targetType: BuildTargetType
   buildConfiguration: string
   buildAccelerator?: BuildAccelerator | null
+  androidPackagingMode?: AndroidPackagingMode | null
   clean: boolean
   pak: boolean
   ioStore: boolean
@@ -122,6 +125,7 @@ export interface BuildSummaryDto {
   targetName: string
   buildConfiguration: string
   buildAccelerator: BuildAccelerator
+  androidPackagingMode: AndroidPackagingMode
   status: BuildStatus
   currentPhase: BuildPhase
   progressPercent: number
@@ -132,6 +136,20 @@ export interface BuildSummaryDto {
   durationSeconds?: number | null
   errorSummary?: string | null
   downloadUrl?: string | null
+}
+
+export interface AndroidPackageArtifactDto {
+  projectName: string
+  packageName: string
+  packagingMode: string
+  apkPath: string
+  dataRoot: string
+  apkSizeBytes: number
+  totalDataSizeBytes: number
+  fileCount: number
+  generatedAtUtc: string
+  installerDownloadUrl: string
+  manifestDownloadUrl: string
 }
 
 export interface BuildDetailDto extends BuildSummaryDto {
@@ -154,6 +172,7 @@ export interface BuildDetailDto extends BuildSummaryDto {
   ubaAgentManualCommand?: string | null
   ubaHostAutoDetected: boolean
   ubaHostWarning?: string | null
+  androidPackage?: AndroidPackageArtifactDto | null
 }
 
 export interface UbaAgentConfigDto {
@@ -237,6 +256,7 @@ export interface UpsertBuildScheduleRequest {
   targetType: BuildTargetType
   buildConfiguration: string
   buildAccelerator?: BuildAccelerator | null
+  androidPackagingMode?: AndroidPackagingMode | null
   clean: boolean
   pak: boolean
   ioStore: boolean
@@ -255,6 +275,7 @@ export interface BuildScheduleSummaryDto {
   targetType: BuildTargetType
   buildConfiguration: string
   buildAccelerator: BuildAccelerator
+  androidPackagingMode: AndroidPackagingMode
   clean: boolean
   pak: boolean
   ioStore: boolean

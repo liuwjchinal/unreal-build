@@ -43,7 +43,7 @@ public sealed class BuildCommandFactoryTests
     }
 
     [Fact]
-    public void CreateUatCommand_AppendsAndroidSplitObbPackagingOverrides_WhenPlatformIsAndroid()
+    public void CreateUatCommand_AppendsAndroidExternalFilesPackagingOverrides_WhenPlatformIsAndroid()
     {
         var project = CreateProject();
         var build = CreateBuild(BuildAccelerator.None);
@@ -58,12 +58,46 @@ public sealed class BuildCommandFactoryTests
         Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:bGenerateNoChunks=False", command.Arguments);
         Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxChunkSize=900000000", command.Arguments);
         Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxIoStorePartitionSizeMB=900", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bPackageDataInsideApk=False", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bUseExternalFilesDir=True", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:+ObbFilters=-.../Content/Paks/...", command.Arguments);
+        Assert.DoesNotContain("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bForceSmallOBBFiles=True", command.Arguments);
+        Assert.DoesNotContain("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowOverflowOBBFiles=True", command.Arguments);
+        Assert.NotNull(command.EnvironmentVariables);
+    }
+
+    [Fact]
+    public void CreateUatCommand_AppendsAndroidSplitObbPackagingOverrides_WhenRequested()
+    {
+        var project = CreateProject();
+        var build = CreateBuild(BuildAccelerator.None);
+        build.Platform = BuildPlatform.Android;
+        build.AndroidPackagingMode = AndroidPackagingMode.SplitObb;
+
+        var command = BuildCommandFactory.CreateUatCommand(project, build);
+
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bPackageDataInsideApk=False", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bUseExternalFilesDir=False", command.Arguments);
         Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bForceSmallOBBFiles=True", command.Arguments);
         Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowLargeOBBFiles=False", command.Arguments);
         Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowPatchOBBFile=True", command.Arguments);
         Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bAllowOverflowOBBFiles=True", command.Arguments);
         Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:OverflowOBBFileLimit=16", command.Arguments);
-        Assert.NotNull(command.EnvironmentVariables);
+    }
+
+    [Fact]
+    public void CreateUatCommand_AppendsAndroidDataInsideApkPackagingOverrides_WhenRequested()
+    {
+        var project = CreateProject();
+        var build = CreateBuild(BuildAccelerator.None);
+        build.Platform = BuildPlatform.Android;
+        build.AndroidPackagingMode = AndroidPackagingMode.DataInsideApk;
+
+        var command = BuildCommandFactory.CreateUatCommand(project, build);
+
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bPackageDataInsideApk=True", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bUseExternalFilesDir=False", command.Arguments);
+        Assert.DoesNotContain("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bForceSmallOBBFiles=True", command.Arguments);
     }
 
     [Fact]

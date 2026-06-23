@@ -10,6 +10,7 @@ public sealed record QueueBuildRequest(
     BuildTargetType TargetType,
     string BuildConfiguration,
     BuildAccelerator? BuildAccelerator,
+    AndroidPackagingMode? AndroidPackagingMode,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -27,6 +28,7 @@ public sealed record BuildSummaryDto(
     string TargetName,
     string BuildConfiguration,
     BuildAccelerator BuildAccelerator,
+    AndroidPackagingMode AndroidPackagingMode,
     BuildStatus Status,
     BuildPhase CurrentPhase,
     int ProgressPercent,
@@ -37,6 +39,19 @@ public sealed record BuildSummaryDto(
     long? DurationSeconds,
     string? ErrorSummary,
     string? DownloadUrl);
+
+public sealed record AndroidPackageArtifactDto(
+    string ProjectName,
+    string PackageName,
+    string PackagingMode,
+    string ApkPath,
+    string DataRoot,
+    long ApkSizeBytes,
+    long TotalDataSizeBytes,
+    int FileCount,
+    string GeneratedAtUtc,
+    string InstallerDownloadUrl,
+    string ManifestDownloadUrl);
 
 public sealed record BuildDetailDto(
     Guid Id,
@@ -50,6 +65,7 @@ public sealed record BuildDetailDto(
     string TargetName,
     string BuildConfiguration,
     BuildAccelerator BuildAccelerator,
+    AndroidPackagingMode AndroidPackagingMode,
     bool Clean,
     bool Pak,
     bool IoStore,
@@ -78,7 +94,8 @@ public sealed record BuildDetailDto(
     string? UbaAgentJoinUrl,
     string? UbaAgentManualCommand,
     bool UbaHostAutoDetected,
-    string? UbaHostWarning);
+    string? UbaHostWarning,
+    AndroidPackageArtifactDto? AndroidPackage);
 
 public sealed record BuildLogSnapshotDto(
     IReadOnlyList<string> Lines,
@@ -89,6 +106,11 @@ public sealed record BuildLogSnapshotDto(
 public static class BuildContractMappings
 {
     public static BuildSummaryDto ToSummaryDto(this BuildRecord build)
+    {
+        return build.ToSummaryDto(allowArchiveFallbackDownload: false);
+    }
+
+    public static BuildSummaryDto ToSummaryDto(this BuildRecord build, bool allowArchiveFallbackDownload)
     {
         return new BuildSummaryDto(
             build.Id,
@@ -102,6 +124,7 @@ public static class BuildContractMappings
             build.TargetName,
             build.BuildConfiguration,
             build.BuildAccelerator,
+            build.AndroidPackagingMode,
             build.Status,
             build.CurrentPhase,
             build.ProgressPercent,
@@ -111,10 +134,15 @@ public static class BuildContractMappings
             build.FinishedAtUtc,
             GetDurationSeconds(build),
             build.ErrorSummary,
-            GetAvailableDownloadUrl(build));
+            GetAvailableDownloadUrl(build, allowArchiveFallbackDownload));
     }
 
     public static BuildDetailDto ToDetailDto(this BuildRecord build)
+    {
+        return build.ToDetailDto(allowArchiveFallbackDownload: false);
+    }
+
+    public static BuildDetailDto ToDetailDto(this BuildRecord build, bool allowArchiveFallbackDownload)
     {
         return new BuildDetailDto(
             build.Id,
@@ -128,6 +156,7 @@ public static class BuildContractMappings
             build.TargetName,
             build.BuildConfiguration,
             build.BuildAccelerator,
+            build.AndroidPackagingMode,
             build.Clean,
             build.Pak,
             build.IoStore,
@@ -142,7 +171,7 @@ public static class BuildContractMappings
             GetDurationSeconds(build),
             build.ExitCode,
             build.ErrorSummary,
-            GetAvailableDownloadUrl(build),
+            GetAvailableDownloadUrl(build, allowArchiveFallbackDownload),
             build.LogLineCount,
             BuildCommandFactory.CreateSvnPreview(build),
             BuildCommandFactory.CreateUatPreview(build),
@@ -156,21 +185,75 @@ public static class BuildContractMappings
             build.UbaAgentJoinUrl,
             build.UbaAgentManualCommand,
             build.UbaHostAutoDetected,
-            build.UbaHostWarning);
+            build.UbaHostWarning,
+            GetAndroidPackageArtifact(build));
     }
 
-    private static string? GetAvailableDownloadUrl(BuildRecord build)
+    private static AndroidPackageArtifactDto? GetAndroidPackageArtifact(BuildRecord build)
     {
-        if (build.Status != BuildStatus.Succeeded ||
-            string.IsNullOrWhiteSpace(build.DownloadUrl) ||
-            string.IsNullOrWhiteSpace(build.ZipFilePath) ||
-            !File.Exists(build.ZipFilePath) ||
-            !CanReadFile(build.ZipFilePath))
+        var manifest = AndroidPackageArtifactsService.TryReadManifest(build.AndroidPackageManifestPath);
+        if (manifest is null ||
+            string.IsNullOrWhiteSpace(build.AndroidInstallScriptPath) ||
+            !File.Exists(build.AndroidInstallScriptPath))
         {
             return null;
         }
 
-        return build.DownloadUrl;
+        return new AndroidPackageArtifactDto(
+            manifest.ProjectName,
+            manifest.PackageName,
+            manifest.PackagingMode,
+            manifest.ApkPath,
+            manifest.DataRoot,
+            manifest.ApkSizeBytes,
+            manifest.TotalDataSizeBytes,
+            manifest.Files.Count,
+            manifest.GeneratedAtUtc,
+            $"/api/builds/{build.Id}/android-package/installer",
+            $"/api/builds/{build.Id}/android-package/manifest");
+    }
+
+    private static string? GetAvailableDownloadUrl(BuildRecord build, bool allowArchiveFallbackDownload)
+    {
+        if (build.Status != BuildStatus.Succeeded)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(build.ZipFilePath) &&
+            File.Exists(build.ZipFilePath) &&
+            CanReadFile(build.ZipFilePath))
+        {
+            return BuildDownloadUrl(build);
+        }
+
+        return allowArchiveFallbackDownload && HasArchiveDirectory(build.ArchiveDirectoryPath)
+            ? BuildDownloadUrl(build)
+            : null;
+    }
+
+    private static string BuildDownloadUrl(BuildRecord build)
+    {
+        return string.IsNullOrWhiteSpace(build.DownloadUrl)
+            ? $"/api/builds/{build.Id}/download"
+            : build.DownloadUrl;
+    }
+
+    private static bool HasArchiveDirectory(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            return Directory.EnumerateFileSystemEntries(path).Any();
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool CanReadFile(string path)

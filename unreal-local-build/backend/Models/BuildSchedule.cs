@@ -24,6 +24,8 @@ public sealed class BuildSchedule
 
     public BuildAccelerator BuildAccelerator { get; set; } = BuildAccelerator.None;
 
+    public AndroidPackagingMode AndroidPackagingMode { get; set; } = AndroidPackagingMode.ExternalFilesIoStore;
+
     public bool Clean { get; set; }
 
     public bool Pak { get; set; } = true;

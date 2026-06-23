@@ -29,6 +29,7 @@ public sealed class BuildOrchestrator(
     AutomationToolJanitor automationToolJanitor,
     BuildStageLogService buildStageLogService,
     BuildLogAnalyzer logAnalyzer,
+    AndroidPackageArtifactsService androidPackageArtifactsService,
     ProjectValidator projectValidator,
     UbaAgentService ubaAgentService,
     ILogger<BuildOrchestrator> logger) : BackgroundService
@@ -94,6 +95,7 @@ public sealed class BuildOrchestrator(
             TargetName = BuildCommandFactory.ResolveTargetName(project, request.Platform, request.TargetType),
             BuildConfiguration = request.BuildConfiguration.Trim(),
             BuildAccelerator = request.BuildAccelerator ?? project.DefaultBuildAccelerator,
+            AndroidPackagingMode = ResolveAndroidPackagingMode(request.Platform, request.AndroidPackagingMode),
             Clean = request.Clean,
             Pak = request.Pak,
             IoStore = request.IoStore,
@@ -143,6 +145,15 @@ public sealed class BuildOrchestrator(
         await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-status"));
         SignalDispatch();
         return build;
+    }
+
+    private static AndroidPackagingMode ResolveAndroidPackagingMode(
+        BuildPlatform platform,
+        AndroidPackagingMode? requestedMode)
+    {
+        return platform == BuildPlatform.Android
+            ? requestedMode ?? AndroidPackagingMode.ExternalFilesIoStore
+            : AndroidPackagingMode.ExternalFilesIoStore;
     }
 
     public async Task<BuildRecord?> CancelBuildAsync(Guid buildId, CancellationToken cancellationToken)
@@ -425,6 +436,18 @@ public sealed class BuildOrchestrator(
             build.StatusMessage = AppText.ZippingArtifacts;
             await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "zip artifacts", cancellationToken);
             await eventBroker.PublishAsync(BuildEventEnvelopeForBuild(build, "build-progress"));
+
+            if (build.Platform == BuildPlatform.Android &&
+                build.AndroidPackagingMode == AndroidPackagingMode.ExternalFilesIoStore)
+            {
+                await androidPackageArtifactsService.CreateExternalDataArtifactsAsync(
+                    project,
+                    build,
+                    writer,
+                    cancellationToken);
+                await SqliteExecution.SaveChangesWithRetryAsync(db, logger, "prepare Android external data artifacts", cancellationToken);
+            }
+
             await stageSession.StartStandaloneStageAsync(
                 BuildStageLogKind.Zip,
                 new ProcessCommand(

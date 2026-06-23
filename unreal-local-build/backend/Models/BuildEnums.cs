@@ -53,6 +53,13 @@ public enum BuildPlatform
     OpenHarmony
 }
 
+public enum AndroidPackagingMode
+{
+    ExternalFilesIoStore,
+    SplitObb,
+    DataInsideApk
+}
+
 public enum BuildTargetType
 {
     Game,

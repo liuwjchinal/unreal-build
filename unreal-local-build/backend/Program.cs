@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Backend.Contracts;
@@ -39,6 +40,7 @@ builder.Services.AddSingleton<ProjectValidator>();
 builder.Services.AddSingleton<BuildLogReader>();
 builder.Services.AddSingleton<BuildStageLogService>();
 builder.Services.AddSingleton<BuildLogAnalyzer>();
+builder.Services.AddSingleton<AndroidPackageArtifactsService>();
 builder.Services.AddSingleton<BuildScheduleRuntimeState>();
 builder.Services.AddSingleton<BuildScheduleValidator>();
 builder.Services.AddSingleton<BuildScheduleRunner>();
@@ -618,8 +620,9 @@ api.MapGet("/builds", async (
         .OrderByDescending(build => build.QueuedAtUtc)
         .Take(take)
         .ToList();
+    var archiveFallbackBuildIds = await GetArchiveFallbackDownloadBuildIdsAsync(db, builds, appOptions, cancellationToken);
 
-    return Results.Ok(builds.Select(build => build.ToSummaryDto()));
+    return Results.Ok(builds.Select(build => build.ToSummaryDto(archiveFallbackBuildIds.Contains(build.Id))));
 });
 
 api.MapGet("/builds/{id:guid}", async (Guid id, IDbContextFactory<BuildDbContext> dbFactory, CancellationToken cancellationToken) =>
@@ -630,7 +633,13 @@ api.MapGet("/builds/{id:guid}", async (Guid id, IDbContextFactory<BuildDbContext
         .Include(item => item.Project)
         .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
 
-    return build is null ? Results.NotFound() : Results.Ok(build.ToDetailDto());
+    if (build is null)
+    {
+        return Results.NotFound();
+    }
+
+    var allowArchiveFallbackDownload = await CanUseArchiveFallbackDownloadAsync(db, build, appOptions, cancellationToken);
+    return Results.Ok(build.ToDetailDto(allowArchiveFallbackDownload));
 });
 
 api.MapGet("/builds/{id:guid}/log", async (
@@ -797,7 +806,7 @@ api.MapGet("/builds/{id:guid}/stage-logs/download", async (
         enableRangeProcessing: false);
 });
 
-api.MapGet("/builds/{id:guid}/download", async (
+api.MapGet("/builds/{id:guid}/android-package/manifest", async (
     Guid id,
     IDbContextFactory<BuildDbContext> dbFactory,
     CancellationToken cancellationToken) =>
@@ -809,15 +818,110 @@ api.MapGet("/builds/{id:guid}/download", async (
 
     if (build is null ||
         build.Status != BuildStatus.Succeeded ||
-        string.IsNullOrWhiteSpace(build.ZipFilePath) ||
-        !File.Exists(build.ZipFilePath))
+        string.IsNullOrWhiteSpace(build.AndroidPackageManifestPath) ||
+        !File.Exists(build.AndroidPackageManifestPath))
+    {
+        return Results.NotFound();
+    }
+
+    return Results.File(
+        build.AndroidPackageManifestPath,
+        "application/json",
+        AndroidPackageArtifactsService.ManifestFileName,
+        enableRangeProcessing: true);
+});
+
+api.MapGet("/builds/{id:guid}/android-package/installer", async (
+    Guid id,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var build = await db.Builds
+        .AsNoTracking()
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    if (build is null ||
+        build.Status != BuildStatus.Succeeded ||
+        string.IsNullOrWhiteSpace(build.AndroidInstallScriptPath) ||
+        !File.Exists(build.AndroidInstallScriptPath))
+    {
+        return Results.NotFound();
+    }
+
+    return Results.File(
+        build.AndroidInstallScriptPath,
+        "text/plain; charset=utf-8",
+        AndroidPackageArtifactsService.InstallerFileName,
+        enableRangeProcessing: true);
+});
+
+api.MapGet("/builds/{id:guid}/download", async (
+    Guid id,
+    IDbContextFactory<BuildDbContext> dbFactory,
+    StoragePaths storagePaths,
+    CancellationToken cancellationToken) =>
+{
+    await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+    var build = await db.Builds
+        .Include(item => item.Project)
+        .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+    if (build is null ||
+        build.Status != BuildStatus.Succeeded ||
+        build.Project is null)
+    {
+        return Results.NotFound();
+    }
+
+    var zipPath = ResolveDownloadZipPath(build, storagePaths);
+    if (string.IsNullOrWhiteSpace(zipPath))
     {
         return Results.NotFound();
     }
 
     try
     {
-        using var stream = new FileStream(build.ZipFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        if (!File.Exists(zipPath))
+        {
+            if (!await CanUseArchiveFallbackDownloadAsync(db, build, appOptions, cancellationToken))
+            {
+                return Results.NotFound();
+            }
+
+            if (string.IsNullOrWhiteSpace(build.ArchiveDirectoryPath) || !Directory.Exists(build.ArchiveDirectoryPath))
+            {
+                return Results.NotFound();
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(zipPath)!);
+            var tempZipPath = $"{zipPath}.{Guid.NewGuid():N}.partial";
+            try
+            {
+                ZipFile.CreateFromDirectory(build.ArchiveDirectoryPath, tempZipPath);
+                try
+                {
+                    File.Move(tempZipPath, zipPath);
+                }
+                catch (IOException) when (File.Exists(zipPath))
+                {
+                    File.Delete(tempZipPath);
+                }
+            }
+            finally
+            {
+                if (File.Exists(tempZipPath))
+                {
+                    File.Delete(tempZipPath);
+                }
+            }
+
+            build.ZipFilePath = zipPath;
+            build.DownloadUrl = $"/api/builds/{build.Id}/download";
+            await SqliteExecution.SaveChangesWithRetryAsync(db, app.Logger, "restore build download zip", cancellationToken);
+        }
+
+        using var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
     }
     catch (IOException)
     {
@@ -825,9 +929,9 @@ api.MapGet("/builds/{id:guid}/download", async (
     }
 
     return Results.File(
-        build.ZipFilePath,
+        zipPath,
         "application/zip",
-        Path.GetFileName(build.ZipFilePath),
+        Path.GetFileName(zipPath),
         enableRangeProcessing: true);
 });
 
@@ -945,6 +1049,97 @@ static string FlattenValidationErrors(Dictionary<string, string[]> errors)
     return string.Join(
         Environment.NewLine,
         errors.SelectMany(pair => pair.Value.Select(message => $"{pair.Key}: {message}")));
+}
+
+static string ResolveDownloadZipPath(BuildRecord build, StoragePaths storagePaths)
+{
+    if (!string.IsNullOrWhiteSpace(build.ZipFilePath))
+    {
+        return build.ZipFilePath;
+    }
+
+    if (build.Project is null)
+    {
+        return string.Empty;
+    }
+
+    return storagePaths.ResolveZipPath(build, build.QueuedAtUtc);
+}
+
+static async Task<HashSet<Guid>> GetArchiveFallbackDownloadBuildIdsAsync(
+    BuildDbContext db,
+    IReadOnlyCollection<BuildRecord> builds,
+    AppOptions appOptions,
+    CancellationToken cancellationToken)
+{
+    if (appOptions.KeepRecentSuccessfulBuildsPerProject <= 0 || builds.Count == 0)
+    {
+        return new HashSet<Guid>();
+    }
+
+    var projectIds = builds
+        .Where(build => build.Status == BuildStatus.Succeeded)
+        .Select(build => build.ProjectId)
+        .Distinct()
+        .ToList();
+    if (projectIds.Count == 0)
+    {
+        return new HashSet<Guid>();
+    }
+
+    var successfulBuilds = await db.Builds
+        .AsNoTracking()
+        .Where(build => projectIds.Contains(build.ProjectId) && build.Status == BuildStatus.Succeeded)
+        .Select(build => new
+        {
+            build.Id,
+            build.ProjectId,
+            build.FinishedAtUtc,
+            build.QueuedAtUtc
+        })
+        .ToListAsync(cancellationToken);
+
+    return successfulBuilds
+        .GroupBy(build => build.ProjectId)
+        .SelectMany(group => group
+            .OrderByDescending(build => build.FinishedAtUtc ?? build.QueuedAtUtc)
+            .ThenByDescending(build => build.Id)
+            .Take(appOptions.KeepRecentSuccessfulBuildsPerProject))
+        .Select(build => build.Id)
+        .ToHashSet();
+}
+
+static async Task<bool> CanUseArchiveFallbackDownloadAsync(
+    BuildDbContext db,
+    BuildRecord build,
+    AppOptions appOptions,
+    CancellationToken cancellationToken)
+{
+    if (appOptions.KeepRecentSuccessfulBuildsPerProject <= 0 ||
+        build.Status != BuildStatus.Succeeded ||
+        build.FinishedAtUtc is null)
+    {
+        return false;
+    }
+
+    var successfulBuilds = await db.Builds
+        .AsNoTracking()
+        .Where(item =>
+            item.ProjectId == build.ProjectId &&
+            item.Status == BuildStatus.Succeeded)
+        .Select(item => new
+        {
+            item.Id,
+            item.FinishedAtUtc,
+            item.QueuedAtUtc
+        })
+        .ToListAsync(cancellationToken);
+
+    return successfulBuilds
+        .OrderByDescending(item => item.FinishedAtUtc ?? item.QueuedAtUtc)
+        .ThenByDescending(item => item.Id)
+        .Take(appOptions.KeepRecentSuccessfulBuildsPerProject)
+        .Any(item => item.Id == build.Id);
 }
 
 public partial class Program;

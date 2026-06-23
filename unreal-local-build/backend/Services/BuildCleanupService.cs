@@ -22,12 +22,12 @@ public sealed class BuildCleanupService(
 
         do
         {
-            await CleanupAsync(stoppingToken);
+            await CleanupOnceAsync(stoppingToken);
         }
         while (await timer.WaitForNextTickAsync(stoppingToken));
     }
 
-    private async Task CleanupAsync(CancellationToken cancellationToken)
+    private async Task CleanupOnceAsync(CancellationToken cancellationToken)
     {
         await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
         var finishedBuilds = await db.Builds
@@ -46,66 +46,28 @@ public sealed class BuildCleanupService(
             return;
         }
 
-        var buildsToPrune = new Dictionary<Guid, BuildRecord>();
-        var retentionCutoffUtc = DateTimeOffset.UtcNow.AddDays(-appOptions.BuildRetentionDays);
-
-        if (appOptions.BuildRetentionDays > 0)
-        {
-            foreach (var build in prunableBuilds.Where(build => build.FinishedAtUtc < retentionCutoffUtc))
-            {
-                buildsToPrune[build.Id] = build;
-            }
-        }
-
-        if (appOptions.KeepRecentSuccessfulBuildsPerProject >= 0)
-        {
-            var overflowBuilds = prunableBuilds
-                .Where(build => build.Status == BuildStatus.Succeeded)
-                .GroupBy(build => build.ProjectId)
-                .SelectMany(group => group
-                    .OrderByDescending(build => build.FinishedAtUtc ?? build.QueuedAtUtc)
-                    .Skip(appOptions.KeepRecentSuccessfulBuildsPerProject));
-
-            foreach (var build in overflowBuilds)
-            {
-                buildsToPrune[build.Id] = build;
-            }
-        }
-
-        if (appOptions.MaxBuildCacheSizeGb > 0)
-        {
-            var cacheLimitBytes = (long)appOptions.MaxBuildCacheSizeGb * 1024 * 1024 * 1024;
-            var cacheEntries = prunableBuilds
-                .Select(build => new BuildCacheEntry(build, GetDirectorySize(build.BuildRootPath)))
-                .Where(entry => entry.SizeBytes > 0)
-                .OrderBy(entry => entry.Build.FinishedAtUtc ?? entry.Build.QueuedAtUtc)
-                .ToList();
-
-            var currentCacheBytes = cacheEntries.Sum(entry => entry.SizeBytes);
-            foreach (var entry in cacheEntries)
-            {
-                if (currentCacheBytes <= cacheLimitBytes)
-                {
-                    break;
-                }
-
-                if (buildsToPrune.ContainsKey(entry.Build.Id))
-                {
-                    currentCacheBytes -= entry.SizeBytes;
-                    continue;
-                }
-
-                buildsToPrune[entry.Build.Id] = entry.Build;
-                currentCacheBytes -= entry.SizeBytes;
-            }
-        }
+        var buildCacheSizeBytesById = prunableBuilds.ToDictionary(
+            build => build.Id,
+            build => GetDirectorySize(build.BuildRootPath));
+        var protectedBuildIds = GetProtectedRecentSuccessfulBuildIds(
+            finishedBuilds,
+            appOptions.KeepRecentSuccessfulBuildsPerProject);
+        var buildIdsToPrune = SelectBuildIdsToPrune(
+            prunableBuilds,
+            buildCacheSizeBytesById,
+            appOptions,
+            DateTimeOffset.UtcNow,
+            protectedBuildIds);
+        var buildsToPrune = prunableBuilds
+            .Where(build => buildIdsToPrune.Contains(build.Id))
+            .ToList();
 
         if (buildsToPrune.Count == 0)
         {
             return;
         }
 
-        foreach (var build in buildsToPrune.Values)
+        foreach (var build in buildsToPrune)
         {
             DeleteDirectory(build.BuildRootPath);
             if (appOptions.CleanupArchiveDirectories)
@@ -116,6 +78,8 @@ public sealed class BuildCleanupService(
 
             build.DownloadUrl = null;
             build.ZipFilePath = null;
+            build.AndroidPackageManifestPath = null;
+            build.AndroidInstallScriptPath = null;
             build.LogFilePath = string.Empty;
             build.BuildRootPath = string.Empty;
         }
@@ -130,6 +94,86 @@ public sealed class BuildCleanupService(
             appOptions.CleanupArchiveDirectories);
     }
 
+    public static HashSet<Guid> SelectBuildIdsToPrune(
+        IReadOnlyCollection<BuildRecord> prunableBuilds,
+        IReadOnlyDictionary<Guid, long> buildCacheSizeBytesById,
+        AppOptions appOptions,
+        DateTimeOffset nowUtc)
+    {
+        var protectedBuildIds = GetProtectedRecentSuccessfulBuildIds(
+            prunableBuilds,
+            appOptions.KeepRecentSuccessfulBuildsPerProject);
+        return SelectBuildIdsToPrune(
+            prunableBuilds,
+            buildCacheSizeBytesById,
+            appOptions,
+            nowUtc,
+            protectedBuildIds);
+    }
+
+    public static HashSet<Guid> SelectBuildIdsToPrune(
+        IReadOnlyCollection<BuildRecord> prunableBuilds,
+        IReadOnlyDictionary<Guid, long> buildCacheSizeBytesById,
+        AppOptions appOptions,
+        DateTimeOffset nowUtc,
+        IReadOnlySet<Guid> protectedBuildIds)
+    {
+        var buildsToPrune = new HashSet<Guid>();
+        var retentionCutoffUtc = nowUtc.AddDays(-appOptions.BuildRetentionDays);
+
+        if (appOptions.BuildRetentionDays > 0)
+        {
+            foreach (var build in prunableBuilds.Where(build =>
+                         build.FinishedAtUtc < retentionCutoffUtc &&
+                         !protectedBuildIds.Contains(build.Id)))
+            {
+                buildsToPrune.Add(build.Id);
+            }
+        }
+
+        if (appOptions.KeepRecentSuccessfulBuildsPerProject >= 0)
+        {
+            foreach (var build in prunableBuilds.Where(build =>
+                         build.Status == BuildStatus.Succeeded &&
+                         !protectedBuildIds.Contains(build.Id)))
+            {
+                buildsToPrune.Add(build.Id);
+            }
+        }
+
+        if (appOptions.MaxBuildCacheSizeGb > 0)
+        {
+            var cacheLimitBytes = (long)appOptions.MaxBuildCacheSizeGb * 1024 * 1024 * 1024;
+            var cacheEntries = prunableBuilds
+                .Select(build => new BuildCacheEntry(
+                    build,
+                    buildCacheSizeBytesById.TryGetValue(build.Id, out var sizeBytes) ? sizeBytes : 0))
+                .Where(entry => entry.SizeBytes > 0)
+                .OrderBy(entry => entry.Build.FinishedAtUtc ?? entry.Build.QueuedAtUtc)
+                .ThenBy(entry => entry.Build.Id)
+                .ToList();
+
+            var currentCacheBytes = cacheEntries.Sum(entry => entry.SizeBytes);
+            foreach (var entry in cacheEntries)
+            {
+                if (currentCacheBytes <= cacheLimitBytes)
+                {
+                    break;
+                }
+
+                if (protectedBuildIds.Contains(entry.Build.Id))
+                {
+                    continue;
+                }
+
+                buildsToPrune.Add(entry.Build.Id);
+                currentCacheBytes -= entry.SizeBytes;
+            }
+        }
+
+        return buildsToPrune;
+    }
+
     private bool HasAnyCleanupRuleEnabled()
     {
         return appOptions.BuildRetentionDays > 0 ||
@@ -137,13 +181,35 @@ public sealed class BuildCleanupService(
                appOptions.MaxBuildCacheSizeGb > 0;
     }
 
-    private static bool HasPrunableFiles(BuildRecord build)
+    private static HashSet<Guid> GetProtectedRecentSuccessfulBuildIds(
+        IReadOnlyCollection<BuildRecord> prunableBuilds,
+        int keepRecentSuccessfulBuildsPerProject)
+    {
+        if (keepRecentSuccessfulBuildsPerProject <= 0)
+        {
+            return new HashSet<Guid>();
+        }
+
+        return prunableBuilds
+            .Where(build => build.Status == BuildStatus.Succeeded)
+            .GroupBy(build => build.ProjectId)
+            .SelectMany(group => group
+                .OrderByDescending(build => build.FinishedAtUtc ?? build.QueuedAtUtc)
+                .ThenByDescending(build => build.Id)
+                .Take(keepRecentSuccessfulBuildsPerProject))
+            .Select(build => build.Id)
+            .ToHashSet();
+    }
+
+    private bool HasPrunableFiles(BuildRecord build)
     {
         return !string.IsNullOrWhiteSpace(build.DownloadUrl) ||
                !string.IsNullOrWhiteSpace(build.ZipFilePath) ||
+               !string.IsNullOrWhiteSpace(build.AndroidPackageManifestPath) ||
+               !string.IsNullOrWhiteSpace(build.AndroidInstallScriptPath) ||
                !string.IsNullOrWhiteSpace(build.LogFilePath) ||
                !string.IsNullOrWhiteSpace(build.BuildRootPath) ||
-               !string.IsNullOrWhiteSpace(build.ArchiveDirectoryPath);
+               (appOptions.CleanupArchiveDirectories && !string.IsNullOrWhiteSpace(build.ArchiveDirectoryPath));
     }
 
     private long GetDirectorySize(string? path)

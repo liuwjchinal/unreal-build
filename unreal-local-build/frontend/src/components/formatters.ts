@@ -1,4 +1,4 @@
-import type { BuildPlatform } from '../types/api'
+import type { AndroidPackagingMode, BuildPlatform } from '../types/api'
 
 export function formatUtc(value?: string | null) {
   if (!value) {
@@ -60,4 +60,33 @@ export function formatPlatform(platform: BuildPlatform) {
     default:
       return 'Windows'
   }
+}
+
+export function formatAndroidPackagingMode(mode?: AndroidPackagingMode | string | null) {
+  switch (mode) {
+    case 'ExternalFilesIoStore':
+      return 'External Files IoStore'
+    case 'SplitObb':
+      return 'Split OBB'
+    case 'DataInsideApk':
+      return 'Data Inside APK'
+    default:
+      return '-'
+  }
+}
+
+export function formatBytes(bytes?: number | null) {
+  if (bytes == null) {
+    return '-'
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex++
+  }
+
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
 }

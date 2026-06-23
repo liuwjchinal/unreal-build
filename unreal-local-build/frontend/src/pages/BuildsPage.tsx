@@ -2,8 +2,16 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { BuildStatusBadge } from '../components/BuildStatusBadge'
-import { formatDuration, formatPlatform, formatSvnRevision, formatUtc, parseTextAreaList } from '../components/formatters'
+import {
+  formatAndroidPackagingMode,
+  formatDuration,
+  formatPlatform,
+  formatSvnRevision,
+  formatUtc,
+  parseTextAreaList,
+} from '../components/formatters'
 import type {
+  AndroidPackagingMode,
   BuildAccelerator,
   BuildPlatform,
   BuildSummaryDto,
@@ -15,7 +23,9 @@ import type {
 const DEFAULT_TARGET: BuildTargetType = 'Game'
 const DEFAULT_PLATFORM: BuildPlatform = 'Windows'
 const DEFAULT_ACCELERATOR: BuildAccelerator = 'None'
+const DEFAULT_ANDROID_PACKAGING_MODE: AndroidPackagingMode = 'ExternalFilesIoStore'
 const GAME_ONLY_PLATFORMS: BuildPlatform[] = ['Android', 'OpenHarmony']
+const ANDROID_PACKAGING_MODES: AndroidPackagingMode[] = ['ExternalFilesIoStore', 'SplitObb', 'DataInsideApk']
 
 export function BuildsPage() {
   const navigate = useNavigate()
@@ -27,6 +37,7 @@ export function BuildsPage() {
   const [targetType, setTargetType] = useState<BuildTargetType>(DEFAULT_TARGET)
   const [buildConfiguration, setBuildConfiguration] = useState('Development')
   const [buildAccelerator, setBuildAccelerator] = useState<BuildAccelerator>(DEFAULT_ACCELERATOR)
+  const [androidPackagingMode, setAndroidPackagingMode] = useState<AndroidPackagingMode>(DEFAULT_ANDROID_PACKAGING_MODE)
   const [clean, setClean] = useState(false)
   const [pak, setPak] = useState(true)
   const [ioStore, setIoStore] = useState(true)
@@ -146,6 +157,7 @@ export function BuildsPage() {
       targetType,
       buildConfiguration,
       buildAccelerator,
+      androidPackagingMode: platform === 'Android' ? androidPackagingMode : null,
       clean,
       pak,
       ioStore,
@@ -243,6 +255,21 @@ export function BuildsPage() {
               </option>
             </select>
           </label>
+          {platform === 'Android' ? (
+            <label>
+              Android Packaging
+              <select
+                value={androidPackagingMode}
+                onChange={(event) => setAndroidPackagingMode(event.target.value as AndroidPackagingMode)}
+              >
+                {ANDROID_PACKAGING_MODES.map((item) => (
+                  <option key={item} value={item}>
+                    {formatAndroidPackagingMode(item)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label className="checkbox-row">
             <input type="checkbox" checked={clean} onChange={(event) => setClean(event.target.checked)} />
             Clean
@@ -308,6 +335,7 @@ export function BuildsPage() {
                   </div>
                   <p className="muted-text">
                     {formatSvnRevision(build.revision)} / Target {build.targetName} / {build.buildAccelerator}
+                    {build.platform === 'Android' ? ` / ${formatAndroidPackagingMode(build.androidPackagingMode)}` : ''}
                   </p>
                 </div>
                 <div className="build-meta">

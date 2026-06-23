@@ -104,6 +104,7 @@ public sealed class BuildScheduleRunner(
                 schedule.TargetType,
                 schedule.BuildConfiguration,
                 schedule.BuildAccelerator,
+                schedule.AndroidPackagingMode,
                 schedule.Clean,
                 schedule.Pak,
                 schedule.IoStore,

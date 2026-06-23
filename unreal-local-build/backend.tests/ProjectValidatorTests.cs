@@ -50,6 +50,7 @@ public sealed class ProjectValidatorTests
             BuildTargetType.Game,
             "Development",
             BuildAccelerator.Uba,
+            AndroidPackagingMode.ExternalFilesIoStore,
             Clean: false,
             Pak: true,
             IoStore: true,
