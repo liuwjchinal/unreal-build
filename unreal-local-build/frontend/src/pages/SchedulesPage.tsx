@@ -106,6 +106,7 @@ export function SchedulesPage() {
       ),
     )
   }, [form.scopeType, projects, selectedProject])
+  const requiresAndroidExternalContainers = form.platform === 'Android' && form.androidPackagingMode === 'ExternalFilesIoStore'
 
   useEffect(() => {
     void bootstrap()
@@ -235,8 +236,8 @@ export function SchedulesPage() {
       buildAccelerator: form.buildAccelerator,
       androidPackagingMode: form.platform === 'Android' ? form.androidPackagingMode : null,
       clean: form.clean,
-      pak: form.pak,
-      ioStore: form.ioStore,
+      pak: requiresAndroidExternalContainers ? true : form.pak,
+      ioStore: requiresAndroidExternalContainers ? true : form.ioStore,
       extraUatArgs: parseTextAreaList(form.extraUatArgs),
     }
 
@@ -431,11 +432,21 @@ export function SchedulesPage() {
             Clean
           </label>
           <label className="checkbox-row">
-            <input type="checkbox" checked={form.pak} onChange={(event) => setForm({ ...form, pak: event.target.checked })} />
+            <input
+              type="checkbox"
+              checked={requiresAndroidExternalContainers ? true : form.pak}
+              onChange={(event) => setForm({ ...form, pak: event.target.checked })}
+              disabled={requiresAndroidExternalContainers}
+            />
             Pak
           </label>
           <label className="checkbox-row">
-            <input type="checkbox" checked={form.ioStore} onChange={(event) => setForm({ ...form, ioStore: event.target.checked })} />
+            <input
+              type="checkbox"
+              checked={requiresAndroidExternalContainers ? true : form.ioStore}
+              onChange={(event) => setForm({ ...form, ioStore: event.target.checked })}
+              disabled={requiresAndroidExternalContainers}
+            />
             IoStore
           </label>
           <label className="span-two">

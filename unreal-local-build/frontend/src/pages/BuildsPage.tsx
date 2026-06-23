@@ -159,8 +159,8 @@ export function BuildsPage() {
       buildAccelerator,
       androidPackagingMode: platform === 'Android' ? androidPackagingMode : null,
       clean,
-      pak,
-      ioStore,
+      pak: requiresAndroidExternalContainers ? true : pak,
+      ioStore: requiresAndroidExternalContainers ? true : ioStore,
       extraUatArgs: parseTextAreaList(extraUatArgs),
     }
 
@@ -177,6 +177,7 @@ export function BuildsPage() {
 
   const runningCount = builds.filter((build) => build.status === 'Running').length
   const queuedCount = builds.filter((build) => build.status === 'Queued').length
+  const requiresAndroidExternalContainers = platform === 'Android' && androidPackagingMode === 'ExternalFilesIoStore'
 
   return (
     <div className="page-grid">
@@ -275,11 +276,21 @@ export function BuildsPage() {
             Clean
           </label>
           <label className="checkbox-row">
-            <input type="checkbox" checked={pak} onChange={(event) => setPak(event.target.checked)} />
+            <input
+              type="checkbox"
+              checked={requiresAndroidExternalContainers ? true : pak}
+              onChange={(event) => setPak(event.target.checked)}
+              disabled={requiresAndroidExternalContainers}
+            />
             Pak
           </label>
           <label className="checkbox-row">
-            <input type="checkbox" checked={ioStore} onChange={(event) => setIoStore(event.target.checked)} />
+            <input
+              type="checkbox"
+              checked={requiresAndroidExternalContainers ? true : ioStore}
+              onChange={(event) => setIoStore(event.target.checked)}
+              disabled={requiresAndroidExternalContainers}
+            />
             IoStore
           </label>
           <label className="span-two">

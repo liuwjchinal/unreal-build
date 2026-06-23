@@ -95,8 +95,14 @@ public static class ScheduleContractMappings
         schedule.BuildAccelerator = request.BuildAccelerator ?? BuildAccelerator.None;
         schedule.AndroidPackagingMode = request.AndroidPackagingMode ?? AndroidPackagingMode.ExternalFilesIoStore;
         schedule.Clean = request.Clean;
-        schedule.Pak = request.Pak;
-        schedule.IoStore = request.IoStore;
+        schedule.Pak = request.Platform == BuildPlatform.Android &&
+                       schedule.AndroidPackagingMode == AndroidPackagingMode.ExternalFilesIoStore
+            ? true
+            : request.Pak;
+        schedule.IoStore = request.Platform == BuildPlatform.Android &&
+                           schedule.AndroidPackagingMode == AndroidPackagingMode.ExternalFilesIoStore
+            ? true
+            : request.IoStore;
         schedule.ExtraUatArgs = NormalizeList(request.ExtraUatArgs);
         schedule.UpdatedAtUtc = DateTimeOffset.UtcNow;
     }
