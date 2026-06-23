@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Diagnostics;
 using Backend.Models;
 
 namespace Backend.Services;
@@ -15,6 +16,7 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
     private static readonly string[] ContainerExtensions = [".pak", ".utoc", ".ucas", ".sig"];
     private static readonly JsonSerializerOptions ManifestJsonOptions = CreateManifestJsonOptions();
     private static readonly Regex PackageNameFromObbRegex = new(@"^(?:main|patch|overflow\d+)\.\d+\.(?<package>.+)\.obb$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex ExplicitPackageNameRegex = new(@"(?:set\s+)?(?:package|packagename)\s*=\s*(?<package>[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*){2,})", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex PackageNameFromInstallScriptRegex = new(@"(?<package>[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*){2,})", RegexOptions.Compiled);
 
     public async Task<AndroidPackageArtifactManifest?> CreateExternalDataArtifactsAsync(
@@ -47,7 +49,7 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         }
 
         var stagedProjectName = ResolveStagedProjectName(pakDirectory, project);
-        var packageName = ResolvePackageName(build.ArchiveDirectoryPath, stagedProjectName);
+        var packageName = ResolvePackageName(build.ArchiveDirectoryPath, apkPath, stagedProjectName);
         var containerFiles = Directory.EnumerateFiles(pakDirectory, "*", SearchOption.TopDirectoryOnly)
             .Where(IsContainerFile)
             .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
@@ -213,8 +215,14 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         return string.IsNullOrWhiteSpace(stagedProjectName) ? project.Name : stagedProjectName;
     }
 
-    private static string ResolvePackageName(string archiveDirectoryPath, string projectName)
+    private static string ResolvePackageName(string archiveDirectoryPath, string apkPath, string projectName)
     {
+        var fromApk = TryReadPackageNameFromApk(apkPath);
+        if (!string.IsNullOrWhiteSpace(fromApk))
+        {
+            return fromApk;
+        }
+
         var fromInstallScript = Directory.EnumerateFiles(archiveDirectoryPath, "Install_*.bat", SearchOption.AllDirectories)
             .Select(TryReadPackageNameFromInstallScript)
             .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
@@ -236,15 +244,103 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         return $"com.YourCompany.{projectName}";
     }
 
+    private static string? TryReadPackageNameFromApk(string apkPath)
+    {
+        try
+        {
+            var aaptPath = LocateAapt();
+            if (string.IsNullOrWhiteSpace(aaptPath))
+            {
+                return null;
+            }
+
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo(aaptPath)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            process.StartInfo.ArgumentList.Add("dump");
+            process.StartInfo.ArgumentList.Add("badging");
+            process.StartInfo.ArgumentList.Add(apkPath);
+
+            process.Start();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(milliseconds: 10000) || process.ExitCode != 0)
+            {
+                TryKillProcess(process);
+                return null;
+            }
+
+            var stdout = stdoutTask.GetAwaiter().GetResult();
+            _ = stderrTask.GetAwaiter().GetResult();
+
+            var match = Regex.Match(stdout, @"package:\s+name='(?<package>[^']+)'", RegexOptions.IgnoreCase);
+            return match.Success ? match.Groups["package"].Value : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? LocateAapt()
+    {
+        var sdkRoot = AndroidToolchain.ResolveSdkRoot();
+        if (!string.IsNullOrWhiteSpace(sdkRoot))
+        {
+            var buildToolsDirectory = Path.Combine(sdkRoot, "build-tools");
+            if (Directory.Exists(buildToolsDirectory))
+            {
+                var fromBuildTools = Directory.EnumerateFiles(buildToolsDirectory, "aapt.exe", SearchOption.AllDirectories)
+                    .OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase)
+                    .FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(fromBuildTools))
+                {
+                    return fromBuildTools;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static void TryKillProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch
+        {
+            // Best effort only; package name parsing has other fallbacks.
+        }
+    }
+
     private static string? TryReadPackageNameFromInstallScript(string scriptPath)
     {
         try
         {
             var text = File.ReadAllText(scriptPath);
+            var explicitMatch = ExplicitPackageNameRegex.Match(text);
+            if (explicitMatch.Success)
+            {
+                return explicitMatch.Groups["package"].Value;
+            }
+
             return PackageNameFromInstallScriptRegex.Matches(text)
                 .Select(match => match.Groups["package"].Value)
                 .Where(value => !value.StartsWith("android.", StringComparison.OrdinalIgnoreCase))
                 .Where(value => !value.StartsWith("com.android.", StringComparison.OrdinalIgnoreCase))
+                .Where(value => !value.StartsWith("com.epicgames.", StringComparison.OrdinalIgnoreCase))
                 .Where(value => value.Contains("com.", StringComparison.OrdinalIgnoreCase) ||
                                 value.Contains("org.", StringComparison.OrdinalIgnoreCase) ||
                                 value.Contains("net.", StringComparison.OrdinalIgnoreCase))

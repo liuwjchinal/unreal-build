@@ -81,6 +81,7 @@ public sealed class BuildOrchestrator(
             Directory.CreateDirectory(project.ArchiveRootPath);
         }
 
+        var androidPackagingMode = ResolveAndroidPackagingMode(request.Platform, request.AndroidPackagingMode);
         var now = DateTimeOffset.UtcNow;
         var build = new BuildRecord
         {
@@ -95,10 +96,10 @@ public sealed class BuildOrchestrator(
             TargetName = BuildCommandFactory.ResolveTargetName(project, request.Platform, request.TargetType),
             BuildConfiguration = request.BuildConfiguration.Trim(),
             BuildAccelerator = request.BuildAccelerator ?? project.DefaultBuildAccelerator,
-            AndroidPackagingMode = ResolveAndroidPackagingMode(request.Platform, request.AndroidPackagingMode),
+            AndroidPackagingMode = androidPackagingMode,
             Clean = request.Clean,
-            Pak = request.Pak,
-            IoStore = request.IoStore,
+            Pak = ResolvePak(request.Platform, androidPackagingMode, request.Pak),
+            IoStore = ResolveIoStore(request.Platform, androidPackagingMode, request.IoStore),
             ExtraUatArgs = NormalizeExtraArgs(
                 request.Platform,
                 project.DefaultExtraUatArgs,
@@ -154,6 +155,28 @@ public sealed class BuildOrchestrator(
         return platform == BuildPlatform.Android
             ? requestedMode ?? AndroidPackagingMode.ExternalFilesIoStore
             : AndroidPackagingMode.ExternalFilesIoStore;
+    }
+
+    private static bool ResolvePak(
+        BuildPlatform platform,
+        AndroidPackagingMode androidPackagingMode,
+        bool requestedPak)
+    {
+        return platform == BuildPlatform.Android &&
+               androidPackagingMode == AndroidPackagingMode.ExternalFilesIoStore
+            ? true
+            : requestedPak;
+    }
+
+    private static bool ResolveIoStore(
+        BuildPlatform platform,
+        AndroidPackagingMode androidPackagingMode,
+        bool requestedIoStore)
+    {
+        return platform == BuildPlatform.Android &&
+               androidPackagingMode == AndroidPackagingMode.ExternalFilesIoStore
+            ? true
+            : requestedIoStore;
     }
 
     public async Task<BuildRecord?> CancelBuildAsync(Guid buildId, CancellationToken cancellationToken)
