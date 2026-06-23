@@ -48,10 +48,15 @@ public sealed class BuildCommandFactoryTests
         var project = CreateProject();
         var build = CreateBuild(BuildAccelerator.None);
         build.Platform = BuildPlatform.Android;
+        build.Pak = false;
+        build.IoStore = false;
 
         var command = BuildCommandFactory.CreateUatCommand(project, build);
 
         Assert.Contains("-targetplatform=Android", command.Arguments);
+        Assert.Contains("-pak", command.Arguments);
+        Assert.Contains("-iostore", command.Arguments);
+        Assert.DoesNotContain("-skipiostore", command.Arguments);
         Assert.Contains("-cookflavor=ASTC", command.Arguments);
         Assert.Contains("-manifests", command.Arguments);
         Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:bGenerateChunks=True", command.Arguments);

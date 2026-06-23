@@ -148,15 +148,21 @@ public static class BuildCommandFactory
             arguments.Add("-clean");
         }
 
-        if (build.Pak)
+        if (build.Pak || RequiresAndroidExternalContainers(build))
         {
             arguments.Add("-pak");
         }
 
-        arguments.Add(build.IoStore ? "-iostore" : "-skipiostore");
+        arguments.Add(build.IoStore || RequiresAndroidExternalContainers(build) ? "-iostore" : "-skipiostore");
         AppendUbtArgs(arguments, build);
         arguments.AddRange(build.ExtraUatArgs);
         return arguments;
+    }
+
+    private static bool RequiresAndroidExternalContainers(BuildRecord build)
+    {
+        return build.Platform == BuildPlatform.Android &&
+               build.AndroidPackagingMode == AndroidPackagingMode.ExternalFilesIoStore;
     }
 
     private static void AppendUbtArgs(List<string> arguments, BuildRecord build)
