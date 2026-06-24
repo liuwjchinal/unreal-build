@@ -77,8 +77,13 @@ public sealed class AndroidPackageArtifactsServiceTests
         Assert.Equal("com.example.uestartergame", manifest.PackageName);
         Assert.Equal("Android/apk/UEStarterGame-arm64.apk", NormalizeArchivePath(archiveRoot, Path.Combine(archiveRoot, "Android", manifest.ApkPath)));
         Assert.Equal("data/UEStarterGame", manifest.DataRoot);
-        Assert.Equal(6, manifest.Files.Count);
+        Assert.Equal("obb", manifest.ObbRoot);
+        Assert.Equal(7, manifest.Files.Count);
         Assert.Equal(2, manifest.Chunks.Count);
+        var supportObb = Assert.Single(manifest.ObbFiles);
+        Assert.Equal("main.1.com.example.uestartergame.obb", supportObb.FileName);
+        Assert.Equal("main", supportObb.Kind);
+        Assert.Equal("1", supportObb.Version);
         Assert.Contains(manifest.Files, file =>
             file.FileName == "pakchunk101-Android_ASTC_0.ucas" &&
             file.StageRelativePath == "UEStarterGame/Content/Paks/pakchunk101-Android_ASTC_0.ucas" &&
@@ -90,6 +95,11 @@ public sealed class AndroidPackageArtifactsServiceTests
             file.StageRelativePath == "Engine/Content/Renderer/TessellationTable.bin" &&
             !file.IsContainer &&
             file.ChunkId is null);
+        Assert.Contains(manifest.Files, file =>
+            file.FileName == "UECommandLine.txt" &&
+            file.StageRelativePath == "UECommandLine.txt" &&
+            !file.IsContainer &&
+            file.ChunkId is null);
         var chunk0 = Assert.Single(manifest.Chunks, chunk => chunk.ChunkId == 0);
         Assert.Equal("chunk0", chunk0.ChunkName);
         Assert.Equal(4, chunk0.FileCount);
@@ -97,12 +107,12 @@ public sealed class AndroidPackageArtifactsServiceTests
         Assert.Equal("chunk101", chunk101.ChunkName);
         Assert.Equal(1, chunk101.FileCount);
         Assert.True(manifest.TotalDataSizeBytes > 0);
-        Assert.False(File.Exists(obbPath));
+        Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", "obb", "main.1.com.example.uestartergame.obb")));
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", "apk", "UEStarterGame-arm64.apk")));
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "UEStarterGame", "Content", "Paks", "pakchunk0-Android_ASTC.ucas")));
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "Engine", "Content", "Renderer", "TessellationTable.bin")));
+        Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "UECommandLine.txt")));
         Assert.False(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "Manifest_UFSFiles_Android.txt")));
-        Assert.False(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "UECommandLine.txt")));
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", AndroidPackageArtifactsService.InstallerFileName)));
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", AndroidPackageArtifactsService.ManifestFileName)));
         var generatedInstallBatPath = Path.Combine(archiveRoot, "Android", "Install_UEStarterGame-arm64.bat");
@@ -117,6 +127,8 @@ public sealed class AndroidPackageArtifactsServiceTests
         var script = await File.ReadAllTextAsync(build.AndroidInstallScriptPath!);
         Assert.Contains("$RemoteRoot = \"/sdcard/Android/data/$PackageName/files/UnrealGame/$ProjectName\"", script, StringComparison.Ordinal);
         Assert.Contains("$RemoteContainerDir = \"$RemoteRoot/$ProjectName/Content/Paks\"", script, StringComparison.Ordinal);
+        Assert.Contains("$RemoteObbRoot = \"/sdcard/Android/obb/$PackageName\"", script, StringComparison.Ordinal);
+        Assert.Contains("$ObbRootRelativePath = 'obb'", script, StringComparison.Ordinal);
         Assert.Contains("--clean-data", script, StringComparison.Ordinal);
         Assert.Contains("--launch", script, StringComparison.Ordinal);
         Assert.Contains("--no-prune-stale", script, StringComparison.Ordinal);
@@ -125,6 +137,7 @@ public sealed class AndroidPackageArtifactsServiceTests
         Assert.Contains("$SelectedContainers = @($Files | Where-Object { $_.IsContainer -and $null -ne $_.ChunkId -and $SelectedChunkIds.ContainsKey([int]$_.ChunkId) })", script, StringComparison.Ordinal);
         Assert.Contains("$SelectedFiles = @($Files | Where-Object { !$_.IsContainer }) + $SelectedContainers", script, StringComparison.Ordinal);
         Assert.Contains("StagePath = 'Engine/Content/Renderer/TessellationTable.bin'; IsContainer = $false", script, StringComparison.Ordinal);
+        Assert.Contains("StagePath = 'UECommandLine.txt'; IsContainer = $false", script, StringComparison.Ordinal);
         Assert.Contains("--clean-data cannot be combined with --chunks", script, StringComparison.Ordinal);
         Assert.Contains("Get-ContainerChunkIdFromFileName $remoteName", script, StringComparison.Ordinal);
         Assert.Contains("Stale remote cleanup is scoped to selected chunks.", script, StringComparison.Ordinal);
@@ -138,6 +151,11 @@ public sealed class AndroidPackageArtifactsServiceTests
         Assert.Contains("REMOVE stale $remoteName", script, StringComparison.Ordinal);
         Assert.Contains("Skipping stale remote container cleanup.", script, StringComparison.Ordinal);
         Assert.Contains("Remote file size mismatch after push", script, StringComparison.Ordinal);
+        Assert.Contains("Remote OBB file size mismatch after push", script, StringComparison.Ordinal);
+        Assert.Contains("PUSH OBB", script, StringComparison.Ordinal);
+        Assert.Contains("SKIP OBB", script, StringComparison.Ordinal);
+        Assert.Contains("$RemoteTempRoot = \"$ExternalStorageRoot/Download/obb-install-temp/$PackageName\"", script, StringComparison.Ordinal);
+        Assert.Contains("Invoke-Adb shell (\"mv \" + (ConvertTo-AdbShellSingleQuoted $tempObbPath)", script, StringComparison.Ordinal);
         Assert.Contains("removed {2}", script, StringComparison.Ordinal);
 
         var generatedInstallBat = await File.ReadAllTextAsync(generatedInstallBatPath);
@@ -156,6 +174,7 @@ public sealed class AndroidPackageArtifactsServiceTests
         Assert.NotNull(loaded);
         Assert.Equal(manifest.PackageName, loaded!.PackageName);
         Assert.Equal(2, loaded.Chunks.Count);
+        Assert.Single(loaded.ObbFiles);
     }
 
     [Fact]

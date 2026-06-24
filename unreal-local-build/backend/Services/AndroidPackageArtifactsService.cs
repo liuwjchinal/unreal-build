@@ -16,10 +16,11 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
 
     private const string AndroidPackageNamePattern = @"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+";
     private static readonly string[] ContainerExtensions = [".pak", ".utoc", ".ucas", ".sig"];
-    private static readonly string[] IgnoredStagedLooseFileNames = ["UECommandLine.txt"];
+    private static readonly string[] IgnoredStagedLooseFileNames = [];
     private static readonly JsonSerializerOptions ManifestJsonOptions = CreateManifestJsonOptions();
     private static readonly Regex AndroidPackageNameRegex = new($"^{AndroidPackageNamePattern}$", RegexOptions.Compiled);
     private static readonly Regex PackageNameFromObbRegex = new($@"^(?:main|patch|overflow\d+)\.\d+\.(?<package>{AndroidPackageNamePattern})\.obb$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex ObbFileNameRegex = new($@"^(?<kind>main|patch|overflow(?<overflowIndex>\d+))\.(?<version>\d+)\.(?<package>{AndroidPackageNamePattern})\.obb$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex ExplicitPackageNameRegex = new($@"(?:set\s+)?(?:package|packagename)\s*=\s*[""']?(?<package>{AndroidPackageNamePattern})[""']?", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex PackageNameFromInstallScriptRegex = new($@"(?<package>{AndroidPackageNamePattern})", RegexOptions.Compiled);
     private static readonly Regex AaptPackageNameRegex = new($@"package:\s+name='(?<package>{AndroidPackageNamePattern})'", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -90,13 +91,16 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
 
         var apkOutputDirectory = Path.Combine(androidRoot, "apk");
         var dataOutputDirectory = Path.Combine(androidRoot, "data", stagedProjectName);
+        var obbOutputDirectory = Path.Combine(androidRoot, "obb");
         Directory.CreateDirectory(apkOutputDirectory);
         Directory.CreateDirectory(dataOutputDirectory);
+        Directory.CreateDirectory(obbOutputDirectory);
 
         var apkOutputPath = Path.Combine(apkOutputDirectory, Path.GetFileName(apkPath));
         File.Copy(apkPath, apkOutputPath, overwrite: true);
 
         var manifestFiles = new List<AndroidPackageArtifactFileEntry>();
+        var obbFiles = LocateObbSupportFiles(build.ArchiveDirectoryPath, packageName, androidRoot, obbOutputDirectory);
         foreach (var sourceFile in containerFiles)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -136,11 +140,13 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
             PackagingMode = build.AndroidPackagingMode.ToString(),
             ApkPath = ToManifestRelativePath(androidRoot, apkOutputPath),
             DataRoot = $"data/{stagedProjectName}",
+            ObbRoot = obbFiles.Count == 0 ? string.Empty : "obb",
             ApkSizeBytes = new FileInfo(apkOutputPath).Length,
             TotalDataSizeBytes = manifestFiles.Sum(item => item.SizeBytes),
             GeneratedAtUtc = DateTimeOffset.UtcNow.ToString("O"),
             Files = manifestFiles,
-            Chunks = manifestChunks
+            Chunks = manifestChunks,
+            ObbFiles = obbFiles
         };
 
         var installScriptPath = Path.Combine(androidRoot, InstallerFileName);
@@ -179,6 +185,10 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         await log.WriteLineAsync($"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}] Android ExternalFilesIoStore artifact prepared.");
         await log.WriteLineAsync($"  APK: {manifest.ApkPath} ({manifest.ApkSizeBytes} bytes)");
         await log.WriteLineAsync($"  Data: {manifest.DataRoot} ({manifest.Files.Count} files, {manifest.TotalDataSizeBytes} bytes)");
+        if (manifest.ObbFiles.Count > 0)
+        {
+            await log.WriteLineAsync($"  OBB support: {manifest.ObbFiles.Count} files");
+        }
         await log.WriteLineAsync($"  Chunks: {manifest.Chunks.Count}");
         await log.WriteLineAsync($"  Package: {manifest.PackageName}");
 
@@ -305,6 +315,47 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
             isContainer,
             chunk?.ChunkId,
             chunk?.ChunkName));
+    }
+
+    private static List<AndroidPackageArtifactObbEntry> LocateObbSupportFiles(
+        string archiveDirectoryPath,
+        string packageName,
+        string androidRoot,
+        string obbOutputDirectory)
+    {
+        var entries = new List<AndroidPackageArtifactObbEntry>();
+        foreach (var sourceFile in Directory.EnumerateFiles(archiveDirectoryPath, "*.obb", SearchOption.AllDirectories)
+                     .Where(path => !IsUnderAndroidOutput(path, archiveDirectoryPath))
+                     .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+        {
+            var fileName = Path.GetFileName(sourceFile);
+            var match = ObbFileNameRegex.Match(fileName);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var filePackageName = match.Groups["package"].Value;
+            if (!string.Equals(filePackageName, packageName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var destinationPath = Path.Combine(obbOutputDirectory, fileName);
+            File.Copy(sourceFile, destinationPath, overwrite: true);
+
+            var info = new FileInfo(destinationPath);
+            entries.Add(new AndroidPackageArtifactObbEntry(
+                ToManifestRelativePath(androidRoot, destinationPath),
+                info.Name,
+                info.Length,
+                info.LastWriteTimeUtc,
+                match.Groups["kind"].Value,
+                ParseNullableInt(match.Groups["overflowIndex"].Value),
+                match.Groups["version"].Value));
+        }
+
+        return entries;
     }
 
     private static string ResolveStagedProjectName(string pakDirectory, ProjectConfig project)
@@ -637,6 +688,13 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         return !string.IsNullOrWhiteSpace(value) && AndroidPackageNameRegex.IsMatch(value.Trim());
     }
 
+    private static int? ParseNullableInt(string? value)
+    {
+        return int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : null;
+    }
+
     private static bool IsSafeAndroidPathSegment(string? value)
     {
         return !string.IsNullOrWhiteSpace(value) &&
@@ -678,6 +736,10 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
             Environment.NewLine,
             manifest.Files.Select(file =>
                 $"  [pscustomobject]@{{ Path = '{EscapePowerShellSingleQuoted(file.RelativePath)}'; StagePath = '{EscapePowerShellSingleQuoted(file.StageRelativePath)}'; IsContainer = {FormatPowerShellBool(file.IsContainer)}; ChunkId = {FormatPowerShellNullableInt(file.ChunkId)}; ChunkName = '{EscapePowerShellSingleQuoted(file.ChunkName ?? string.Empty)}' }}"));
+        var obbFiles = string.Join(
+            Environment.NewLine,
+            manifest.ObbFiles.Select(file =>
+                $"  [pscustomobject]@{{ Path = '{EscapePowerShellSingleQuoted(file.RelativePath)}'; FileName = '{EscapePowerShellSingleQuoted(file.FileName)}'; Kind = '{EscapePowerShellSingleQuoted(file.Kind)}'; OverflowIndex = {FormatPowerShellNullableInt(file.OverflowIndex)}; Version = '{EscapePowerShellSingleQuoted(file.Version)}' }}"));
 
         return $$"""
 $ErrorActionPreference = "Stop"
@@ -691,8 +753,12 @@ $PackageName = '{{EscapePowerShellSingleQuoted(manifest.PackageName)}}'
 $ProjectName = '{{EscapePowerShellSingleQuoted(manifest.ProjectName)}}'
 $ApkRelativePath = '{{EscapePowerShellSingleQuoted(manifest.ApkPath)}}'
 $DataRootRelativePath = '{{EscapePowerShellSingleQuoted(manifest.DataRoot)}}'
+$ObbRootRelativePath = '{{EscapePowerShellSingleQuoted(manifest.ObbRoot)}}'
 $Files = @(
 {{files}}
+)
+$ObbFiles = @(
+{{obbFiles}}
 )
 $SelectedChunkIds = $null
 
@@ -874,6 +940,33 @@ function Get-RemoteContainerFiles {
         Where-Object { $_ -match '\.(pak|utoc|ucas|sig)$' })
 }
 
+function Get-ExternalStorageRoot {
+    $deviceArgs = @()
+    if ($Device) {
+        $deviceArgs += "-s"
+        $deviceArgs += $Device
+    }
+
+    $commands = @(
+        "echo `$EXTERNAL_STORAGE",
+        "echo /sdcard"
+    )
+
+    foreach ($command in $commands) {
+        $output = & $Adb @deviceArgs shell $command
+        if ($LASTEXITCODE -ne 0) {
+            continue
+        }
+
+        $value = ($output | Select-Object -First 1).ToString().Trim()
+        if (![string]::IsNullOrWhiteSpace($value)) {
+            return $value
+        }
+    }
+
+    return "/sdcard"
+}
+
 function Get-RemotePathForFile {
     param([object]$File)
 
@@ -906,8 +999,12 @@ function Get-ContainerChunkIdFromFileName {
 $Adb = Find-Adb
 $ApkPath = Join-Path $ScriptRoot $ApkRelativePath
 $DataRoot = Join-Path $ScriptRoot $DataRootRelativePath
+$ObbRootLocal = if ([string]::IsNullOrWhiteSpace($ObbRootRelativePath)) { $null } else { Join-Path $ScriptRoot $ObbRootRelativePath }
+$ExternalStorageRoot = Get-ExternalStorageRoot
+$RemoteTempRoot = "$ExternalStorageRoot/Download/obb-install-temp/$PackageName"
 $RemoteRoot = "/sdcard/Android/data/$PackageName/files/UnrealGame/$ProjectName"
 $RemoteContainerDir = "$RemoteRoot/$ProjectName/Content/Paks"
+$RemoteObbRoot = "/sdcard/Android/obb/$PackageName"
 $SelectedFiles = @($Files)
 if ($ChunkFilter) {
     $SelectedChunkIds = ConvertTo-ChunkIdSet $ChunkFilter
@@ -925,6 +1022,7 @@ if ($ChunkFilter) {
 
 if (!(Test-Path $ApkPath)) { throw "APK not found: $ApkPath" }
 if (!(Test-Path $DataRoot)) { throw "Data root not found: $DataRoot" }
+if ($ObbFiles.Count -gt 0 -and (!$ObbRootLocal -or !(Test-Path $ObbRootLocal))) { throw "OBB root not found: $ObbRootLocal" }
 
 Write-Host "Using adb: $Adb"
 if ($ChunkFilter) {
@@ -941,8 +1039,17 @@ $QuotedRemoteRoot = ConvertTo-AdbShellSingleQuoted $RemoteRoot
 if ($CleanData) {
     Write-Host "Cleaning existing remote external data..."
     Invoke-Adb shell "rm -rf $QuotedRemoteRoot"
+    if ($ObbFiles.Count -gt 0) {
+        $QuotedRemoteObbRoot = ConvertTo-AdbShellSingleQuoted $RemoteObbRoot
+        Write-Host "Cleaning existing remote OBB support files..."
+        Invoke-Adb shell "rm -rf $QuotedRemoteObbRoot"
+    }
 }
 Invoke-Adb shell "mkdir -p $QuotedRemoteRoot"
+if ($ObbFiles.Count -gt 0) {
+    Invoke-Adb shell ("mkdir -p " + (ConvertTo-AdbShellSingleQuoted $RemoteObbRoot))
+    Invoke-Adb shell ("mkdir -p " + (ConvertTo-AdbShellSingleQuoted $RemoteTempRoot))
+}
 
 $pushed = 0
 $skipped = 0
@@ -1008,6 +1115,39 @@ foreach ($file in $SelectedFiles) {
 
     $pushed++
     Write-Host ("PUSH {0} ({1:n0} bytes, {2:n1}s)" -f $fileInfo.Name, $fileInfo.Length, $sw.Elapsed.TotalSeconds)
+}
+
+$stopwatchAll.Stop()
+if ($ObbFiles.Count -gt 0) {
+    foreach ($obb in $ObbFiles) {
+        $localObbPath = Join-Path $ScriptRoot $obb.Path
+        if (!(Test-Path $localObbPath)) {
+            throw "OBB support file listed in manifest is missing: $localObbPath"
+        }
+
+        $remoteObbPath = "$RemoteObbRoot/$($obb.FileName)"
+        $tempObbPath = "$RemoteTempRoot/$($obb.FileName)"
+        $localObbInfo = Get-Item $localObbPath
+        $remoteObbSize = Get-RemoteFileSize $remoteObbPath
+        if ($remoteObbSize -eq $localObbInfo.Length) {
+            Write-Host ("SKIP OBB {0} ({1:n0} bytes)" -f $localObbInfo.Name, $localObbInfo.Length)
+            continue
+        }
+
+        Invoke-Adb push $localObbPath $tempObbPath
+        Invoke-Adb shell ("mkdir -p " + (ConvertTo-AdbShellSingleQuoted $RemoteObbRoot))
+        Invoke-Adb shell ("mv " + (ConvertTo-AdbShellSingleQuoted $tempObbPath) + " " + (ConvertTo-AdbShellSingleQuoted $remoteObbPath))
+        $verifiedObbSize = Get-RemoteFileSize $remoteObbPath
+        if ($null -eq $verifiedObbSize) {
+            Write-Warning "Could not verify remote OBB size for $($localObbInfo.Name)."
+        } elseif ($verifiedObbSize -ne $localObbInfo.Length) {
+            throw "Remote OBB file size mismatch after push: $($localObbInfo.Name). Local=$($localObbInfo.Length), Remote=$verifiedObbSize"
+        }
+
+        Write-Host ("PUSH OBB {0} ({1:n0} bytes)" -f $localObbInfo.Name, $localObbInfo.Length)
+    }
+
+    Invoke-Adb shell ("rm -rf " + (ConvertTo-AdbShellSingleQuoted $RemoteTempRoot))
 }
 
 $stopwatchAll.Stop()
@@ -1202,6 +1342,8 @@ exit /b 0
 
         public string DataRoot { get; set; } = string.Empty;
 
+        public string ObbRoot { get; set; } = string.Empty;
+
         public long ApkSizeBytes { get; set; }
 
         public long TotalDataSizeBytes { get; set; }
@@ -1211,6 +1353,8 @@ exit /b 0
         public List<AndroidPackageArtifactFileEntry> Files { get; set; } = new();
 
         public List<AndroidPackageArtifactChunkEntry> Chunks { get; set; } = new();
+
+        public List<AndroidPackageArtifactObbEntry> ObbFiles { get; set; } = new();
     }
 
     public sealed record AndroidPackageArtifactFileEntry(
@@ -1229,6 +1373,15 @@ exit /b 0
         int FileCount,
         long TotalSizeBytes,
         List<string> Files);
+
+    public sealed record AndroidPackageArtifactObbEntry(
+        string RelativePath,
+        string FileName,
+        long SizeBytes,
+        DateTime LastWriteTimeUtc,
+        string Kind,
+        int? OverflowIndex,
+        string Version);
 
     private sealed record AndroidPackageArtifactChunkIdentity(int ChunkId, string ChunkName);
 }
