@@ -147,9 +147,21 @@ export interface AndroidPackageArtifactDto {
   apkSizeBytes: number
   totalDataSizeBytes: number
   fileCount: number
+  containerFileCount: number
+  looseFileCount: number
+  chunkCount: number
+  largestChunkSizeBytes: number
+  chunks: AndroidPackageArtifactChunkDto[]
   generatedAtUtc: string
   installerDownloadUrl: string
   manifestDownloadUrl: string
+}
+
+export interface AndroidPackageArtifactChunkDto {
+  chunkId: number
+  chunkName: string
+  fileCount: number
+  totalSizeBytes: number
 }
 
 export interface BuildDetailDto extends BuildSummaryDto {

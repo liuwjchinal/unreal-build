@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -13,11 +14,23 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
     public const string InstallerFileName = "install-android-external-data.ps1";
     public const string ManifestFileName = "android-package-manifest.json";
 
+    private const string AndroidPackageNamePattern = @"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+";
     private static readonly string[] ContainerExtensions = [".pak", ".utoc", ".ucas", ".sig"];
+    private static readonly string[] IgnoredStagedLooseFileNames = ["UECommandLine.txt"];
     private static readonly JsonSerializerOptions ManifestJsonOptions = CreateManifestJsonOptions();
-    private static readonly Regex PackageNameFromObbRegex = new(@"^(?:main|patch|overflow\d+)\.\d+\.(?<package>.+)\.obb$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex ExplicitPackageNameRegex = new(@"(?:set\s+)?(?:package|packagename)\s*=\s*(?<package>[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*){2,})", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex PackageNameFromInstallScriptRegex = new(@"(?<package>[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*){2,})", RegexOptions.Compiled);
+    private static readonly Regex AndroidPackageNameRegex = new($"^{AndroidPackageNamePattern}$", RegexOptions.Compiled);
+    private static readonly Regex PackageNameFromObbRegex = new($@"^(?:main|patch|overflow\d+)\.\d+\.(?<package>{AndroidPackageNamePattern})\.obb$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex ExplicitPackageNameRegex = new($@"(?:set\s+)?(?:package|packagename)\s*=\s*[""']?(?<package>{AndroidPackageNamePattern})[""']?", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex PackageNameFromInstallScriptRegex = new($@"(?<package>{AndroidPackageNamePattern})", RegexOptions.Compiled);
+    private static readonly Regex AaptPackageNameRegex = new($@"package:\s+name='(?<package>{AndroidPackageNamePattern})'", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex PakChunkFileNameRegex = new(@"^pakchunk(?<chunkId>\d+).*?\.(?:pak|utoc|ucas|sig)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex[] PackageNameFromTextRegexes =
+    [
+        new($@"Using package name:\s*'(?<package>{AndroidPackageNamePattern})'", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new($@"\bPACKAGE_NAME\s*=\s*(?<package>{AndroidPackageNamePattern})", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new($@"\bPackageName\s*=\s*(?<package>{AndroidPackageNamePattern})", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new($@"pkgName:(?<package>{AndroidPackageNamePattern})", RegexOptions.IgnoreCase | RegexOptions.Compiled)
+    ];
 
     public async Task<AndroidPackageArtifactManifest?> CreateExternalDataArtifactsAsync(
         ProjectConfig project,
@@ -49,7 +62,16 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         }
 
         var stagedProjectName = ResolveStagedProjectName(pakDirectory, project);
-        var packageName = ResolvePackageName(build.ArchiveDirectoryPath, apkPath, stagedProjectName);
+        if (!IsSafeAndroidPathSegment(stagedProjectName))
+        {
+            throw new InvalidOperationException(
+                $"Staged Android project name '{stagedProjectName}' is not safe for the ExternalFilesDir data path. " +
+                "Use a project/target name containing only letters, numbers, underscore, dash, or dot.");
+        }
+
+        var packageName = ResolvePackageName(project, build, build.ArchiveDirectoryPath, apkPath, stagedProjectName);
+        var stagedRoot = LocateStagedRootFromPakDirectory(pakDirectory)
+            ?? throw new DirectoryNotFoundException($"No staged Android root directory was found for Paks directory {pakDirectory}.");
         var containerFiles = Directory.EnumerateFiles(pakDirectory, "*", SearchOption.TopDirectoryOnly)
             .Where(IsContainerFile)
             .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
@@ -67,7 +89,7 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         }
 
         var apkOutputDirectory = Path.Combine(androidRoot, "apk");
-        var dataOutputDirectory = Path.Combine(androidRoot, "data", stagedProjectName, "Content", "Paks");
+        var dataOutputDirectory = Path.Combine(androidRoot, "data", stagedProjectName);
         Directory.CreateDirectory(apkOutputDirectory);
         Directory.CreateDirectory(dataOutputDirectory);
 
@@ -79,15 +101,31 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var destinationFile = Path.Combine(dataOutputDirectory, Path.GetFileName(sourceFile));
-            File.Copy(sourceFile, destinationFile, overwrite: true);
-            var info = new FileInfo(destinationFile);
-            manifestFiles.Add(new AndroidPackageArtifactFileEntry(
-                ToManifestRelativePath(androidRoot, destinationFile),
-                info.Name,
-                info.Length,
-                info.LastWriteTimeUtc));
+            var stageRelativePath = ToManifestRelativePath(stagedRoot, sourceFile);
+            CopyExternalDataFile(
+                sourceFile,
+                dataOutputDirectory,
+                androidRoot,
+                stageRelativePath,
+                isContainer: true,
+                manifestFiles);
         }
+
+        foreach (var sourceFile in LocateStagedLooseFiles(stagedRoot, pakDirectory))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var stageRelativePath = ToManifestRelativePath(stagedRoot, sourceFile);
+            CopyExternalDataFile(
+                sourceFile,
+                dataOutputDirectory,
+                androidRoot,
+                stageRelativePath,
+                isContainer: false,
+                manifestFiles);
+        }
+
+        var manifestChunks = CreateChunkEntries(manifestFiles);
 
         var manifest = new AndroidPackageArtifactManifest
         {
@@ -97,11 +135,12 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
             Revision = build.DisplayRevision,
             PackagingMode = build.AndroidPackagingMode.ToString(),
             ApkPath = ToManifestRelativePath(androidRoot, apkOutputPath),
-            DataRoot = $"data/{stagedProjectName}/Content/Paks",
+            DataRoot = $"data/{stagedProjectName}",
             ApkSizeBytes = new FileInfo(apkOutputPath).Length,
             TotalDataSizeBytes = manifestFiles.Sum(item => item.SizeBytes),
             GeneratedAtUtc = DateTimeOffset.UtcNow.ToString("O"),
-            Files = manifestFiles
+            Files = manifestFiles,
+            Chunks = manifestChunks
         };
 
         var installScriptPath = Path.Combine(androidRoot, InstallerFileName);
@@ -118,6 +157,20 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
             new UTF8Encoding(false),
             cancellationToken);
 
+        var installBatchPath = Path.Combine(androidRoot, CreateInstallBatchFileName(manifest));
+        await File.WriteAllTextAsync(
+            installBatchPath,
+            CreateInstallBatchScript(manifest),
+            new UTF8Encoding(false),
+            cancellationToken);
+
+        var uninstallBatchPath = Path.Combine(androidRoot, CreateUninstallBatchFileName(manifest));
+        await File.WriteAllTextAsync(
+            uninstallBatchPath,
+            CreateUninstallBatchScript(manifest),
+            new UTF8Encoding(false),
+            cancellationToken);
+
         PruneArchiveToAndroidRoot(build.ArchiveDirectoryPath, androidRoot);
 
         build.AndroidPackageManifestPath = manifestPath;
@@ -126,14 +179,16 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         await log.WriteLineAsync($"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}] Android ExternalFilesIoStore artifact prepared.");
         await log.WriteLineAsync($"  APK: {manifest.ApkPath} ({manifest.ApkSizeBytes} bytes)");
         await log.WriteLineAsync($"  Data: {manifest.DataRoot} ({manifest.Files.Count} files, {manifest.TotalDataSizeBytes} bytes)");
+        await log.WriteLineAsync($"  Chunks: {manifest.Chunks.Count}");
         await log.WriteLineAsync($"  Package: {manifest.PackageName}");
 
         logger.LogInformation(
-            "Prepared Android external data artifacts for build {BuildId}. Package={PackageName}, Project={ProjectName}, FileCount={FileCount}, TotalDataSizeBytes={TotalDataSizeBytes}",
+            "Prepared Android external data artifacts for build {BuildId}. Package={PackageName}, Project={ProjectName}, FileCount={FileCount}, ChunkCount={ChunkCount}, TotalDataSizeBytes={TotalDataSizeBytes}",
             build.Id,
             manifest.PackageName,
             manifest.ProjectName,
             manifest.Files.Count,
+            manifest.Chunks.Count,
             manifest.TotalDataSizeBytes);
 
         return manifest;
@@ -207,6 +262,51 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         return candidates;
     }
 
+    private static string? LocateStagedRootFromPakDirectory(string pakDirectory)
+    {
+        var contentDirectory = Directory.GetParent(pakDirectory);
+        var projectDirectory = contentDirectory?.Parent;
+        return projectDirectory?.Parent?.FullName;
+    }
+
+    private static IEnumerable<string> LocateStagedLooseFiles(string stagedRoot, string pakDirectory)
+    {
+        var pakDirectoryFullPath = Path.GetFullPath(pakDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        return Directory.EnumerateFiles(stagedRoot, "*", SearchOption.AllDirectories)
+            .Where(path => !IsUnderDirectory(path, pakDirectoryFullPath))
+            .Where(path => !IsIgnoredStagedLooseFile(path))
+            .OrderBy(path => ToManifestRelativePath(stagedRoot, path), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static void CopyExternalDataFile(
+        string sourceFile,
+        string dataOutputDirectory,
+        string androidRoot,
+        string stageRelativePath,
+        bool isContainer,
+        List<AndroidPackageArtifactFileEntry> manifestFiles)
+    {
+        var destinationFile = Path.Combine(
+            dataOutputDirectory,
+            stageRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationFile)!);
+        File.Copy(sourceFile, destinationFile, overwrite: true);
+
+        var info = new FileInfo(destinationFile);
+        var chunk = isContainer ? TryInferChunk(info.Name) : null;
+        manifestFiles.Add(new AndroidPackageArtifactFileEntry(
+            ToManifestRelativePath(androidRoot, destinationFile),
+            stageRelativePath,
+            info.Name,
+            info.Length,
+            info.LastWriteTimeUtc,
+            isContainer,
+            chunk?.ChunkId,
+            chunk?.ChunkName));
+    }
+
     private static string ResolveStagedProjectName(string pakDirectory, ProjectConfig project)
     {
         var contentDirectory = Directory.GetParent(pakDirectory);
@@ -215,73 +315,74 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         return string.IsNullOrWhiteSpace(stagedProjectName) ? project.Name : stagedProjectName;
     }
 
-    private static string ResolvePackageName(string archiveDirectoryPath, string apkPath, string projectName)
+    private static string ResolvePackageName(
+        ProjectConfig project,
+        BuildRecord build,
+        string archiveDirectoryPath,
+        string apkPath,
+        string projectName)
     {
         var fromApk = TryReadPackageNameFromApk(apkPath);
-        if (!string.IsNullOrWhiteSpace(fromApk))
+        if (IsValidPackageName(fromApk))
         {
-            return fromApk;
+            return fromApk!;
+        }
+
+        var fromArchivePackageInfo = TryReadPackageNameFromArchivePackageInfo(apkPath);
+        if (IsValidPackageName(fromArchivePackageInfo))
+        {
+            return fromArchivePackageInfo!;
+        }
+
+        var fromBuildLog = TryReadPackageNameFromBuildLog(build.LogFilePath);
+        if (IsValidPackageName(fromBuildLog))
+        {
+            return fromBuildLog!;
         }
 
         var fromInstallScript = Directory.EnumerateFiles(archiveDirectoryPath, "Install_*.bat", SearchOption.AllDirectories)
             .Select(TryReadPackageNameFromInstallScript)
-            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-        if (!string.IsNullOrWhiteSpace(fromInstallScript))
+            .FirstOrDefault(IsValidPackageName);
+        if (IsValidPackageName(fromInstallScript))
         {
-            return fromInstallScript;
+            return fromInstallScript!;
         }
 
         var fromObb = Directory.EnumerateFiles(archiveDirectoryPath, "*.obb", SearchOption.AllDirectories)
             .Select(path => PackageNameFromObbRegex.Match(Path.GetFileName(path)))
             .Where(match => match.Success)
             .Select(match => match.Groups["package"].Value)
-            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-        if (!string.IsNullOrWhiteSpace(fromObb))
+            .FirstOrDefault(IsValidPackageName);
+        if (IsValidPackageName(fromObb))
         {
-            return fromObb;
+            return fromObb!;
         }
 
-        return $"com.YourCompany.{projectName}";
+        var fromProjectPackageInfo = TryReadPackageNameFromProjectPackageInfo(project);
+        if (IsValidPackageName(fromProjectPackageInfo))
+        {
+            return fromProjectPackageInfo!;
+        }
+
+        throw new InvalidOperationException(
+            "Unable to resolve the Android package name from the APK, packageInfo.txt, build log, install script, or OBB names. " +
+            $"Build {build.Id} cannot prepare external data artifacts for project {projectName} because pushing data to a guessed package directory is unsafe.");
     }
 
     private static string? TryReadPackageNameFromApk(string apkPath)
     {
         try
         {
-            var aaptPath = LocateAapt();
-            if (string.IsNullOrWhiteSpace(aaptPath))
+            foreach (var aaptPath in LocateAaptTools())
             {
-                return null;
-            }
-
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo(aaptPath)
+                var packageName = TryReadPackageNameFromApkWithTool(apkPath, aaptPath);
+                if (IsValidPackageName(packageName))
                 {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
+                    return packageName;
                 }
-            };
-            process.StartInfo.ArgumentList.Add("dump");
-            process.StartInfo.ArgumentList.Add("badging");
-            process.StartInfo.ArgumentList.Add(apkPath);
-
-            process.Start();
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(milliseconds: 10000) || process.ExitCode != 0)
-            {
-                TryKillProcess(process);
-                return null;
             }
 
-            var stdout = stdoutTask.GetAwaiter().GetResult();
-            _ = stderrTask.GetAwaiter().GetResult();
-
-            var match = Regex.Match(stdout, @"package:\s+name='(?<package>[^']+)'", RegexOptions.IgnoreCase);
-            return match.Success ? match.Groups["package"].Value : null;
+            return null;
         }
         catch
         {
@@ -289,7 +390,106 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         }
     }
 
-    private static string? LocateAapt()
+    private static string? TryReadPackageNameFromApkWithTool(string apkPath, string aaptPath)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo(aaptPath)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            }
+        };
+        process.StartInfo.ArgumentList.Add("dump");
+        process.StartInfo.ArgumentList.Add("badging");
+        process.StartInfo.ArgumentList.Add(apkPath);
+
+        process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(milliseconds: 10000) || process.ExitCode != 0)
+        {
+            TryKillProcess(process);
+            return null;
+        }
+
+        var stdout = stdoutTask.GetAwaiter().GetResult();
+        _ = stderrTask.GetAwaiter().GetResult();
+
+        var match = AaptPackageNameRegex.Match(stdout);
+        return match.Success ? match.Groups["package"].Value : null;
+    }
+
+    private static string? TryReadPackageNameFromArchivePackageInfo(string apkPath)
+    {
+        var apkDirectory = Path.GetDirectoryName(apkPath);
+        return string.IsNullOrWhiteSpace(apkDirectory)
+            ? null
+            : TryReadFirstPackageInfoLine(Path.Combine(apkDirectory, "packageInfo.txt"));
+    }
+
+    private static string? TryReadPackageNameFromProjectPackageInfo(ProjectConfig project)
+    {
+        var projectDirectory = Path.GetDirectoryName(project.UProjectPath);
+        return string.IsNullOrWhiteSpace(projectDirectory)
+            ? null
+            : TryReadFirstPackageInfoLine(Path.Combine(projectDirectory, "Binaries", "Android", "packageInfo.txt"));
+    }
+
+    private static string? TryReadFirstPackageInfoLine(string packageInfoPath)
+    {
+        try
+        {
+            if (!File.Exists(packageInfoPath))
+            {
+                return null;
+            }
+
+            var line = File.ReadLines(packageInfoPath).FirstOrDefault()?.Trim();
+            return IsValidPackageName(line) ? line : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TryReadPackageNameFromBuildLog(string logPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(logPath) || !File.Exists(logPath))
+            {
+                return null;
+            }
+
+            foreach (var line in File.ReadLines(logPath))
+            {
+                foreach (var regex in PackageNameFromTextRegexes)
+                {
+                    var match = regex.Match(line);
+                    if (match.Success)
+                    {
+                        var packageName = match.Groups["package"].Value;
+                        if (IsValidPackageName(packageName))
+                        {
+                            return packageName;
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> LocateAaptTools()
     {
         var sdkRoot = AndroidToolchain.ResolveSdkRoot();
         if (!string.IsNullOrWhiteSpace(sdkRoot))
@@ -297,17 +497,15 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
             var buildToolsDirectory = Path.Combine(sdkRoot, "build-tools");
             if (Directory.Exists(buildToolsDirectory))
             {
-                var fromBuildTools = Directory.EnumerateFiles(buildToolsDirectory, "aapt.exe", SearchOption.AllDirectories)
+                foreach (var fromBuildTools in Directory.EnumerateFiles(buildToolsDirectory, "aapt.exe", SearchOption.AllDirectories)
+                    .Concat(Directory.EnumerateFiles(buildToolsDirectory, "aapt2.exe", SearchOption.AllDirectories))
                     .OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase)
-                    .FirstOrDefault();
-                if (!string.IsNullOrWhiteSpace(fromBuildTools))
+                    .Distinct(StringComparer.OrdinalIgnoreCase))
                 {
-                    return fromBuildTools;
+                    yield return fromBuildTools;
                 }
             }
         }
-
-        return null;
     }
 
     private static void TryKillProcess(Process process)
@@ -385,6 +583,66 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
         return ContainerExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
     }
 
+    private static bool IsIgnoredStagedLooseFile(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        return fileName.StartsWith("Manifest_", StringComparison.OrdinalIgnoreCase) ||
+               IgnoredStagedLooseFileNames.Contains(fileName, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsUnderDirectory(string path, string directoryPath)
+    {
+        var relativePath = Path.GetRelativePath(
+            directoryPath,
+            Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        return !relativePath.StartsWith("..", StringComparison.Ordinal) && !Path.IsPathRooted(relativePath);
+    }
+
+    private static AndroidPackageArtifactChunkIdentity? TryInferChunk(string fileName)
+    {
+        var match = PakChunkFileNameRegex.Match(fileName);
+        if (!match.Success ||
+            !int.TryParse(match.Groups["chunkId"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var chunkId))
+        {
+            return null;
+        }
+
+        return new AndroidPackageArtifactChunkIdentity(chunkId, $"chunk{chunkId}");
+    }
+
+    private static List<AndroidPackageArtifactChunkEntry> CreateChunkEntries(
+        IReadOnlyCollection<AndroidPackageArtifactFileEntry> files)
+    {
+        return files
+            .Where(file => file.ChunkId.HasValue)
+            .GroupBy(file => file.ChunkId!.Value)
+            .OrderBy(group => group.Key)
+            .Select(group =>
+            {
+                var chunkFiles = group
+                    .OrderBy(file => file.FileName, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                return new AndroidPackageArtifactChunkEntry(
+                    group.Key,
+                    chunkFiles.FirstOrDefault(file => !string.IsNullOrWhiteSpace(file.ChunkName))?.ChunkName ?? $"chunk{group.Key}",
+                    chunkFiles.Count,
+                    chunkFiles.Sum(file => file.SizeBytes),
+                    chunkFiles.Select(file => file.RelativePath).ToList());
+            })
+            .ToList();
+    }
+
+    private static bool IsValidPackageName(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value) && AndroidPackageNameRegex.IsMatch(value.Trim());
+    }
+
+    private static bool IsSafeAndroidPathSegment(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value) &&
+               value.All(ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.');
+    }
+
     private static bool IsPreferredApkName(string path)
     {
         var fileName = Path.GetFileName(path);
@@ -418,7 +676,8 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
     {
         var files = string.Join(
             Environment.NewLine,
-            manifest.Files.Select(file => $"  '{EscapePowerShellSingleQuoted(file.RelativePath)}'"));
+            manifest.Files.Select(file =>
+                $"  [pscustomobject]@{{ Path = '{EscapePowerShellSingleQuoted(file.RelativePath)}'; StagePath = '{EscapePowerShellSingleQuoted(file.StageRelativePath)}'; IsContainer = {FormatPowerShellBool(file.IsContainer)}; ChunkId = {FormatPowerShellNullableInt(file.ChunkId)}; ChunkName = '{EscapePowerShellSingleQuoted(file.ChunkName ?? string.Empty)}' }}"));
 
         return $$"""
 $ErrorActionPreference = "Stop"
@@ -426,6 +685,8 @@ $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Device = ""
 $CleanData = $false
 $Launch = $false
+$PruneStale = $true
+$ChunkFilter = $null
 $PackageName = '{{EscapePowerShellSingleQuoted(manifest.PackageName)}}'
 $ProjectName = '{{EscapePowerShellSingleQuoted(manifest.ProjectName)}}'
 $ApkRelativePath = '{{EscapePowerShellSingleQuoted(manifest.ApkPath)}}'
@@ -433,6 +694,7 @@ $DataRootRelativePath = '{{EscapePowerShellSingleQuoted(manifest.DataRoot)}}'
 $Files = @(
 {{files}}
 )
+$SelectedChunkIds = $null
 
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
@@ -440,6 +702,18 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         "-CleanData" { $CleanData = $true }
         "--launch" { $Launch = $true }
         "-Launch" { $Launch = $true }
+        "--no-prune-stale" { $PruneStale = $false }
+        "-NoPruneStale" { $PruneStale = $false }
+        "--chunks" {
+            if ($i + 1 -ge $args.Count) { throw "--chunks requires a comma-separated chunk id list." }
+            $ChunkFilter = $args[$i + 1]
+            $i++
+        }
+        "-Chunks" {
+            if ($i + 1 -ge $args.Count) { throw "-Chunks requires a comma-separated chunk id list." }
+            $ChunkFilter = $args[$i + 1]
+            $i++
+        }
         "-s" {
             if ($i + 1 -ge $args.Count) { throw "-s requires a device serial." }
             $Device = $args[$i + 1]
@@ -457,6 +731,31 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         }
         default { throw "Unknown argument: $($args[$i])" }
     }
+}
+
+function ConvertTo-ChunkIdSet {
+    param([string]$Value)
+
+    $set = @{}
+    foreach ($part in ($Value -split ',')) {
+        $text = $part.Trim()
+        if (!$text) {
+            continue
+        }
+
+        $chunkId = 0
+        if (![int]::TryParse($text, [ref]$chunkId)) {
+            throw "Invalid chunk id '$text'. Use a comma-separated numeric list, for example: --chunks 0,101"
+        }
+
+        $set[$chunkId] = $true
+    }
+
+    if ($set.Count -eq 0) {
+        throw "Chunk filter is empty. Use a comma-separated numeric list, for example: --chunks 0,101"
+    }
+
+    return $set
 }
 
 function Find-Adb {
@@ -491,6 +790,30 @@ function Invoke-Adb {
     }
 }
 
+function ConvertTo-AdbShellSingleQuoted {
+    param([string]$Value)
+
+    return "'" + ($Value -replace "'", "'\''") + "'"
+}
+
+function Test-InstalledPackage {
+    param([string]$Name)
+
+    $quotedPackage = ConvertTo-AdbShellSingleQuoted $Name
+    $deviceArgs = @()
+    if ($Device) {
+        $deviceArgs += "-s"
+        $deviceArgs += $Device
+    }
+
+    $output = & $Adb @deviceArgs shell "pm path $quotedPackage 2>/dev/null"
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+
+    return (($output | Out-String).Trim().Length -gt 0)
+}
+
 function Get-RemoteFileSize {
     param([string]$RemotePath)
 
@@ -500,13 +823,81 @@ function Get-RemoteFileSize {
         $deviceArgs += $Device
     }
 
-    $output = & $Adb @deviceArgs shell "stat -c %s '$RemotePath' 2>/dev/null"
+    $quotedPath = ConvertTo-AdbShellSingleQuoted $RemotePath
+    $commands = @(
+        "stat -c %s $quotedPath 2>/dev/null",
+        "toybox stat -c %s $quotedPath 2>/dev/null",
+        "wc -c < $quotedPath 2>/dev/null"
+    )
+
+    foreach ($command in $commands) {
+        $output = & $Adb @deviceArgs shell $command
+        if ($LASTEXITCODE -eq 0) {
+            $text = ($output | Select-Object -First 1).ToString().Trim()
+            $value = 0L
+            if ([long]::TryParse($text, [ref]$value)) {
+                return $value
+            }
+        }
+    }
+
+    $output = & $Adb @deviceArgs shell "ls -ln $quotedPath 2>/dev/null"
     if ($LASTEXITCODE -eq 0) {
-        $text = ($output | Select-Object -First 1).ToString().Trim()
+        $line = ($output | Select-Object -First 1).ToString().Trim()
+        $parts = $line -split '\s+'
         $value = 0L
-        if ([long]::TryParse($text, [ref]$value)) {
+        if ($parts.Count -ge 5 -and [long]::TryParse($parts[4], [ref]$value)) {
             return $value
         }
+    }
+
+    return $null
+}
+
+function Get-RemoteContainerFiles {
+    param([string]$RemoteDirectory)
+
+    $deviceArgs = @()
+    if ($Device) {
+        $deviceArgs += "-s"
+        $deviceArgs += $Device
+    }
+
+    $quotedDirectory = ConvertTo-AdbShellSingleQuoted $RemoteDirectory
+    $output = & $Adb @deviceArgs shell "ls -1 $quotedDirectory 2>/dev/null"
+    if ($LASTEXITCODE -ne 0) {
+        return @()
+    }
+
+    return @($output |
+        ForEach-Object { $_.ToString().Trim() } |
+        Where-Object { $_ -match '\.(pak|utoc|ucas|sig)$' })
+}
+
+function Get-RemotePathForFile {
+    param([object]$File)
+
+    return "$RemoteRoot/$($File.StagePath)"
+}
+
+function Remove-RemoteContainerFile {
+    param([string]$RemotePath)
+
+    $quotedPath = ConvertTo-AdbShellSingleQuoted $RemotePath
+    Invoke-Adb shell "rm -f $quotedPath"
+}
+
+function Get-ContainerChunkIdFromFileName {
+    param([string]$FileName)
+
+    $match = [regex]::Match($FileName, '^pakchunk(?<chunkId>\d+).*?\.(pak|utoc|ucas|sig)$', 'IgnoreCase')
+    if (!$match.Success) {
+        return $null
+    }
+
+    $chunkId = 0
+    if ([int]::TryParse($match.Groups['chunkId'].Value, [ref]$chunkId)) {
+        return $chunkId
     }
 
     return $null
@@ -515,35 +906,87 @@ function Get-RemoteFileSize {
 $Adb = Find-Adb
 $ApkPath = Join-Path $ScriptRoot $ApkRelativePath
 $DataRoot = Join-Path $ScriptRoot $DataRootRelativePath
-$RemoteDir = "/sdcard/Android/data/$PackageName/files/UnrealGame/$ProjectName/$ProjectName/Content/Paks"
+$RemoteRoot = "/sdcard/Android/data/$PackageName/files/UnrealGame/$ProjectName"
+$RemoteContainerDir = "$RemoteRoot/$ProjectName/Content/Paks"
+$SelectedFiles = @($Files)
+if ($ChunkFilter) {
+    $SelectedChunkIds = ConvertTo-ChunkIdSet $ChunkFilter
+    if ($CleanData) {
+        throw "--clean-data cannot be combined with --chunks because it deletes all remote chunks. Run without --chunks for a full refresh, or omit --clean-data for selective chunk sync."
+    }
+
+    $SelectedContainers = @($Files | Where-Object { $_.IsContainer -and $null -ne $_.ChunkId -and $SelectedChunkIds.ContainsKey([int]$_.ChunkId) })
+    if ($SelectedContainers.Count -eq 0) {
+        throw "No container files matched --chunks $ChunkFilter. Check android-package-manifest.json for available chunks."
+    }
+
+    $SelectedFiles = @($Files | Where-Object { !$_.IsContainer }) + $SelectedContainers
+}
 
 if (!(Test-Path $ApkPath)) { throw "APK not found: $ApkPath" }
 if (!(Test-Path $DataRoot)) { throw "Data root not found: $DataRoot" }
 
 Write-Host "Using adb: $Adb"
+if ($ChunkFilter) {
+    Write-Host ("Chunk filter: {0} ({1} files). Stale remote cleanup is scoped to selected chunks." -f $ChunkFilter, $SelectedFiles.Count)
+}
 Write-Host "Installing APK: $ApkPath"
 Invoke-Adb install -r -d $ApkPath
-
-Write-Host "Preparing remote data directory: $RemoteDir"
-if ($CleanData) {
-    Write-Host "Cleaning existing remote Paks..."
-    Invoke-Adb shell "rm -rf '$RemoteDir'"
+if (!(Test-InstalledPackage $PackageName)) {
+    throw "Installed APK did not register package $PackageName. Refusing to push external data to a guessed directory."
 }
-Invoke-Adb shell "mkdir -p '$RemoteDir'"
+
+Write-Host "Preparing remote data root: $RemoteRoot"
+$QuotedRemoteRoot = ConvertTo-AdbShellSingleQuoted $RemoteRoot
+if ($CleanData) {
+    Write-Host "Cleaning existing remote external data..."
+    Invoke-Adb shell "rm -rf $QuotedRemoteRoot"
+}
+Invoke-Adb shell "mkdir -p $QuotedRemoteRoot"
 
 $pushed = 0
 $skipped = 0
 $totalBytes = 0L
 $stopwatchAll = [System.Diagnostics.Stopwatch]::StartNew()
+$expectedRemoteNames = @{}
+foreach ($file in $SelectedFiles) {
+    if ($file.IsContainer) {
+        $expectedRemoteNames[[System.IO.Path]::GetFileName($file.Path)] = $true
+    }
+}
 
-foreach ($relativePath in $Files) {
-    $localPath = Join-Path $ScriptRoot $relativePath
+$removed = 0
+if ($PruneStale) {
+    foreach ($remoteName in Get-RemoteContainerFiles $RemoteContainerDir) {
+        if ($expectedRemoteNames.ContainsKey($remoteName)) {
+            continue
+        }
+
+        if ($SelectedChunkIds) {
+            $remoteChunkId = Get-ContainerChunkIdFromFileName $remoteName
+            if ($null -eq $remoteChunkId -or !$SelectedChunkIds.ContainsKey([int]$remoteChunkId)) {
+                continue
+            }
+        }
+
+        Remove-RemoteContainerFile "$RemoteContainerDir/$remoteName"
+        $removed++
+        Write-Host "REMOVE stale $remoteName"
+    }
+} else {
+    Write-Host "Skipping stale remote container cleanup."
+}
+
+foreach ($file in $SelectedFiles) {
+    $localPath = Join-Path $ScriptRoot $file.Path
     if (!(Test-Path $localPath)) {
         throw "Data file listed in manifest is missing: $localPath"
     }
 
     $fileInfo = Get-Item $localPath
-    $remotePath = "$RemoteDir/$($fileInfo.Name)"
+    $remotePath = Get-RemotePathForFile $file
+    $remoteParent = $remotePath.Substring(0, $remotePath.LastIndexOf('/'))
+    Invoke-Adb shell ("mkdir -p " + (ConvertTo-AdbShellSingleQuoted $remoteParent))
     $remoteSize = Get-RemoteFileSize $remotePath
     $totalBytes += $fileInfo.Length
 
@@ -556,12 +999,19 @@ foreach ($relativePath in $Files) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     Invoke-Adb push $localPath $remotePath
     $sw.Stop()
+    $verifiedRemoteSize = Get-RemoteFileSize $remotePath
+    if ($null -eq $verifiedRemoteSize) {
+        Write-Warning "Could not verify remote size for $($fileInfo.Name)."
+    } elseif ($verifiedRemoteSize -ne $fileInfo.Length) {
+        throw "Remote file size mismatch after push: $($fileInfo.Name). Local=$($fileInfo.Length), Remote=$verifiedRemoteSize"
+    }
+
     $pushed++
     Write-Host ("PUSH {0} ({1:n0} bytes, {2:n1}s)" -f $fileInfo.Name, $fileInfo.Length, $sw.Elapsed.TotalSeconds)
 }
 
 $stopwatchAll.Stop()
-Write-Host ("Done. Pushed {0}, skipped {1}, total {2:n0} bytes, elapsed {3:n1}s." -f $pushed, $skipped, $totalBytes, $stopwatchAll.Elapsed.TotalSeconds)
+Write-Host ("Done. Pushed {0}, skipped {1}, removed {2}, total {3:n0} bytes, elapsed {4:n1}s." -f $pushed, $skipped, $removed, $totalBytes, $stopwatchAll.Elapsed.TotalSeconds)
 
 if ($Launch) {
     Write-Host "Launching $PackageName"
@@ -570,9 +1020,170 @@ if ($Launch) {
 """;
     }
 
+    private static string CreateInstallBatchFileName(AndroidPackageArtifactManifest manifest)
+    {
+        return $"Install_{CreateBatchScriptBaseName(manifest)}.bat";
+    }
+
+    private static string CreateUninstallBatchFileName(AndroidPackageArtifactManifest manifest)
+    {
+        return $"Uninstall_{CreateBatchScriptBaseName(manifest)}.bat";
+    }
+
+    private static string CreateBatchScriptBaseName(AndroidPackageArtifactManifest manifest)
+    {
+        var apkPath = manifest.ApkPath.Replace('/', Path.DirectorySeparatorChar);
+        var apkBaseName = Path.GetFileNameWithoutExtension(apkPath);
+        if (string.IsNullOrWhiteSpace(apkBaseName))
+        {
+            apkBaseName = manifest.ProjectName;
+        }
+
+        var invalidFileNameCharacters = Path.GetInvalidFileNameChars();
+        var safeName = new string(apkBaseName
+            .Select(ch => invalidFileNameCharacters.Contains(ch) ? '_' : ch)
+            .ToArray());
+        return string.IsNullOrWhiteSpace(safeName) ? "Android" : safeName;
+    }
+
+    private static string CreateInstallBatchScript(AndroidPackageArtifactManifest manifest)
+    {
+        var apkPath = manifest.ApkPath.Replace('/', '\\');
+        return $$"""
+@echo off
+setlocal EnableExtensions
+chcp 65001 >nul
+
+set "ROOT=%~dp0"
+set "APK_PATH=%ROOT%{{EscapeBatchValue(apkPath)}}"
+set "INSTALL_PS1=%ROOT%{{InstallerFileName}}"
+
+if not exist "%APK_PATH%" (
+    echo APK not found:
+    echo   "%APK_PATH%"
+    echo.
+    echo Files under "%ROOT%apk":
+    dir /b "%ROOT%apk\*.apk" 2>nul
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist "%INSTALL_PS1%" (
+    echo External data installer script not found:
+    echo   "%INSTALL_PS1%"
+    echo.
+    pause
+    exit /b 1
+)
+
+call :FindAdb
+if errorlevel 1 (
+    echo.
+    pause
+    exit /b 1
+)
+
+echo Using adb: "%ADB%"
+echo APK: "%APK_PATH%"
+echo.
+"%ADB%" devices
+echo.
+echo Installing APK and syncing external data to the connected device...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_PS1%"
+if errorlevel 1 (
+    echo.
+    echo Install failed.
+    pause
+    exit /b 1
+)
+
+echo.
+echo Install completed.
+pause
+exit /b 0
+
+:FindAdb
+set "ADB="
+if defined ANDROID_HOME if exist "%ANDROID_HOME%\platform-tools\adb.exe" set "ADB=%ANDROID_HOME%\platform-tools\adb.exe"
+if not defined ADB if defined ANDROID_SDK_ROOT if exist "%ANDROID_SDK_ROOT%\platform-tools\adb.exe" set "ADB=%ANDROID_SDK_ROOT%\platform-tools\adb.exe"
+if not defined ADB for %%I in (adb.exe) do set "ADB=%%~$PATH:I"
+if not defined ADB (
+    echo adb.exe was not found. Set ANDROID_HOME/ANDROID_SDK_ROOT or add adb to PATH.
+    exit /b 1
+)
+exit /b 0
+""";
+    }
+
+    private static string CreateUninstallBatchScript(AndroidPackageArtifactManifest manifest)
+    {
+        return $$"""
+@echo off
+setlocal EnableExtensions
+chcp 65001 >nul
+
+set "PACKAGE_NAME={{EscapeBatchValue(manifest.PackageName)}}"
+
+call :FindAdb
+if errorlevel 1 (
+    echo.
+    pause
+    exit /b 1
+)
+
+echo Using adb: "%ADB%"
+echo Package: %PACKAGE_NAME%
+echo.
+"%ADB%" devices
+echo.
+echo Uninstalling %PACKAGE_NAME% from the connected device...
+"%ADB%" uninstall %PACKAGE_NAME%
+if errorlevel 1 (
+    echo.
+    echo Uninstall failed.
+    pause
+    exit /b 1
+)
+
+echo.
+echo Uninstall completed.
+pause
+exit /b 0
+
+:FindAdb
+set "ADB="
+if defined ANDROID_HOME if exist "%ANDROID_HOME%\platform-tools\adb.exe" set "ADB=%ANDROID_HOME%\platform-tools\adb.exe"
+if not defined ADB if defined ANDROID_SDK_ROOT if exist "%ANDROID_SDK_ROOT%\platform-tools\adb.exe" set "ADB=%ANDROID_SDK_ROOT%\platform-tools\adb.exe"
+if not defined ADB for %%I in (adb.exe) do set "ADB=%%~$PATH:I"
+if not defined ADB (
+    echo adb.exe was not found. Set ANDROID_HOME/ANDROID_SDK_ROOT or add adb to PATH.
+    exit /b 1
+)
+exit /b 0
+""";
+    }
+
+    private static string FormatPowerShellNullableInt(int? value)
+    {
+        return value.HasValue ? value.Value.ToString(CultureInfo.InvariantCulture) : "$null";
+    }
+
+    private static string FormatPowerShellBool(bool value)
+    {
+        return value ? "$true" : "$false";
+    }
+
     private static string EscapePowerShellSingleQuoted(string value)
     {
         return value.Replace("'", "''", StringComparison.Ordinal);
+    }
+
+    private static string EscapeBatchValue(string value)
+    {
+        return value
+            .Replace("%", "%%", StringComparison.Ordinal)
+            .Replace("\"", string.Empty, StringComparison.Ordinal);
     }
 
     public sealed class AndroidPackageArtifactManifest
@@ -598,11 +1209,26 @@ if ($Launch) {
         public string GeneratedAtUtc { get; set; } = string.Empty;
 
         public List<AndroidPackageArtifactFileEntry> Files { get; set; } = new();
+
+        public List<AndroidPackageArtifactChunkEntry> Chunks { get; set; } = new();
     }
 
     public sealed record AndroidPackageArtifactFileEntry(
         string RelativePath,
+        string StageRelativePath,
         string FileName,
         long SizeBytes,
-        DateTime LastWriteTimeUtc);
+        DateTime LastWriteTimeUtc,
+        bool IsContainer,
+        int? ChunkId,
+        string? ChunkName);
+
+    public sealed record AndroidPackageArtifactChunkEntry(
+        int ChunkId,
+        string ChunkName,
+        int FileCount,
+        long TotalSizeBytes,
+        List<string> Files);
+
+    private sealed record AndroidPackageArtifactChunkIdentity(int ChunkId, string ChunkName);
 }

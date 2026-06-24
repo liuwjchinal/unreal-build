@@ -72,6 +72,52 @@ public sealed class BuildCommandFactoryTests
     }
 
     [Fact]
+    public void CreateUatCommand_FiltersConflictingExtraArgs_WhenAndroidExternalFilesModeIsUsed()
+    {
+        var project = CreateProject();
+        var build = CreateBuild(BuildAccelerator.None);
+        build.Platform = BuildPlatform.Android;
+        build.AndroidPackagingMode = AndroidPackagingMode.ExternalFilesIoStore;
+        build.ExtraUatArgs =
+        [
+            "-compressed",
+            "-skipiostore",
+            "-forcepackagedata",
+            "-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bPackageDataInsideApk=True"
+        ];
+
+        var command = BuildCommandFactory.CreateUatCommand(project, build);
+
+        Assert.Contains("-compressed", command.Arguments);
+        Assert.DoesNotContain("-skipiostore", command.Arguments);
+        Assert.DoesNotContain("-forcepackagedata", command.Arguments);
+        Assert.DoesNotContain(command.Arguments, arg => arg.Contains("bPackageDataInsideApk=True", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void CreateUatCommand_KeepsMatchingExtraArgs_WhenAndroidExternalFilesModeIsUsed()
+    {
+        var project = CreateProject();
+        var build = CreateBuild(BuildAccelerator.None);
+        build.Platform = BuildPlatform.Android;
+        build.AndroidPackagingMode = AndroidPackagingMode.ExternalFilesIoStore;
+        build.ExtraUatArgs =
+        [
+            "-compressed",
+            "-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bPackageDataInsideApk=False",
+            "-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bUseExternalFilesDir=True",
+            "-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxIoStorePartitionSizeMB=900"
+        ];
+
+        var command = BuildCommandFactory.CreateUatCommand(project, build);
+
+        Assert.Contains("-compressed", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bPackageDataInsideApk=False", command.Arguments);
+        Assert.Contains("-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:bUseExternalFilesDir=True", command.Arguments);
+        Assert.Contains("-ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:MaxIoStorePartitionSizeMB=900", command.Arguments);
+    }
+
+    [Fact]
     public void CreateUatCommand_AppendsAndroidSplitObbPackagingOverrides_WhenRequested()
     {
         var project = CreateProject();

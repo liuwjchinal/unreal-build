@@ -23,6 +23,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             targetType: null,
             buildConfiguration: null,
             buildAccelerator: null,
+            androidPackagingMode: null,
             extraUatArgs: request.DefaultExtraUatArgs,
             extraUatArgsErrorKey: nameof(request.DefaultExtraUatArgs),
             cancellationToken);
@@ -62,6 +63,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
             targetType: request.TargetType,
             buildConfiguration: request.BuildConfiguration,
             buildAccelerator: request.BuildAccelerator ?? project.DefaultBuildAccelerator,
+            androidPackagingMode: request.AndroidPackagingMode,
             extraUatArgs: mergedExtraUatArgs,
             extraUatArgsErrorKey: nameof(request.ExtraUatArgs),
             cancellationToken);
@@ -75,6 +77,7 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         BuildTargetType? targetType,
         string? buildConfiguration,
         BuildAccelerator? buildAccelerator,
+        AndroidPackagingMode? androidPackagingMode,
         IEnumerable<string>? extraUatArgs,
         string extraUatArgsErrorKey,
         CancellationToken cancellationToken)
@@ -205,6 +208,13 @@ public sealed class ProjectValidator(IDbContextFactory<BuildDbContext> dbFactory
         if (BuildCommandFactory.ContainsNoUba(extraUatArgs))
         {
             Add(extraUatArgsErrorKey, "额外 UAT 参数中包含 -NoUBA，会与构建加速器设置冲突。");
+        }
+
+        if (platform == BuildPlatform.Android &&
+            (androidPackagingMode ?? AndroidPackagingMode.ExternalFilesIoStore) == AndroidPackagingMode.ExternalFilesIoStore &&
+            BuildCommandFactory.ContainsAndroidExternalFilesIoStoreConflictArgs(extraUatArgs))
+        {
+            Add(extraUatArgsErrorKey, "Android ExternalFilesIoStore conflicts with one or more extra UAT arguments.");
         }
 
         await ValidateArchiveDirectoryAsync(request.ArchiveRootPath, errors, cancellationToken);

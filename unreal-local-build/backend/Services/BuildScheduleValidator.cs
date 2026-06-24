@@ -72,6 +72,13 @@ public sealed class BuildScheduleValidator(IDbContextFactory<BuildDbContext> dbF
             Add(nameof(request.ExtraUatArgs), "额外 UAT 参数中不能包含 -NoUBA。");
         }
 
+        if (request.Platform == BuildPlatform.Android &&
+            (request.AndroidPackagingMode ?? AndroidPackagingMode.ExternalFilesIoStore) == AndroidPackagingMode.ExternalFilesIoStore &&
+            BuildCommandFactory.ContainsAndroidExternalFilesIoStoreConflictArgs(request.ExtraUatArgs))
+        {
+            Add(nameof(request.ExtraUatArgs), "Android ExternalFilesIoStore conflicts with one or more extra UAT arguments.");
+        }
+
         return errors.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
 
         void ValidateProjectCompatibility(ProjectConfig project)
@@ -89,6 +96,14 @@ public sealed class BuildScheduleValidator(IDbContextFactory<BuildDbContext> dbF
             if (request.Platform == BuildPlatform.OpenHarmony && !project.OpenHarmonyEnabled)
             {
                 Add(nameof(request.Platform), "该项目未启用 OpenHarmony 构建。");
+            }
+
+            if (request.Platform == BuildPlatform.Android &&
+                (request.AndroidPackagingMode ?? AndroidPackagingMode.ExternalFilesIoStore) == AndroidPackagingMode.ExternalFilesIoStore &&
+                BuildCommandFactory.ContainsAndroidExternalFilesIoStoreConflictArgs(
+                    project.DefaultExtraUatArgs.Concat(request.ExtraUatArgs ?? Enumerable.Empty<string>())))
+            {
+                Add(nameof(request.ExtraUatArgs), "Android ExternalFilesIoStore conflicts with one or more extra UAT arguments.");
             }
 
             var targetName = BuildCommandFactory.ResolveTargetName(project, request.Platform, request.TargetType);

@@ -649,7 +649,14 @@ export function BuildDetailPage() {
               <div>
                 <dt>External Data</dt>
                 <dd>
-                  {formatBytes(androidPackage.totalDataSizeBytes)} / {androidPackage.fileCount} files
+                  {formatBytes(androidPackage.totalDataSizeBytes)} / {androidPackage.fileCount} files (
+                  {androidPackage.containerFileCount} containers, {androidPackage.looseFileCount} loose)
+                </dd>
+              </div>
+              <div>
+                <dt>Chunks</dt>
+                <dd>
+                  {androidPackage.chunkCount} chunks / largest {formatBytes(androidPackage.largestChunkSizeBytes)}
                 </dd>
               </div>
               <div>
@@ -661,6 +668,27 @@ export function BuildDetailPage() {
                 <dd>{formatUtc(androidPackage.generatedAtUtc)}</dd>
               </div>
             </dl>
+            {androidPackage.chunks.length > 0 ? (
+              <>
+                <p className="muted-text">
+                  Selective sync example: ./install-android-external-data.ps1 --chunks{' '}
+                  {androidPackage.chunks
+                    .slice(0, Math.min(2, androidPackage.chunks.length))
+                    .map((chunk) => chunk.chunkId)
+                    .join(',')}
+                </p>
+                <div className="artifact-list">
+                  {androidPackage.chunks.slice(0, 6).map((chunk) => (
+                    <span key={chunk.chunkId} className="artifact-chip">
+                      {chunk.chunkName}: {formatBytes(chunk.totalSizeBytes)} / {chunk.fileCount} files
+                    </span>
+                  ))}
+                  {androidPackage.chunks.length > 6 ? (
+                    <span className="artifact-chip">+{androidPackage.chunks.length - 6} more</span>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
             <div className="form-actions uba-agent-actions">
               <a className="secondary-button" href={api.toDownloadUrl(androidPackage.installerDownloadUrl) ?? undefined}>
                 Download install script

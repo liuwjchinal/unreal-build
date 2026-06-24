@@ -15,6 +15,7 @@ public static class BuildCommandFactory
     private const string AndroidMaxIoStorePartitionSizeMb = "900";
     private const string AndroidOverflowObbFileLimit = "16";
     private const string AndroidExternalDataObbFilter = "-.../Content/Paks/...";
+    private const string AndroidExternalFilesObbFilterArgument = "-ini:Engine:[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]:+ObbFilters=-.../Content/Paks/...";
 
     public static ProcessCommand CreateSvnCommand(ProjectConfig project, BuildRecord build)
     {
@@ -107,6 +108,11 @@ public static class BuildCommandFactory
             arg.Contains("-NoUBA", StringComparison.OrdinalIgnoreCase));
     }
 
+    public static bool ContainsAndroidExternalFilesIoStoreConflictArgs(IEnumerable<string>? args)
+    {
+        return (args ?? Array.Empty<string>()).Any(IsAndroidExternalFilesIoStoreConflictArg);
+    }
+
     private static List<string> BuildBaseUatArguments(ProjectConfig? project, BuildRecord build, bool includeArchiveDirectory)
     {
         var arguments = new List<string>();
@@ -155,7 +161,7 @@ public static class BuildCommandFactory
 
         arguments.Add(build.IoStore || RequiresAndroidExternalContainers(build) ? "-iostore" : "-skipiostore");
         AppendUbtArgs(arguments, build);
-        arguments.AddRange(build.ExtraUatArgs);
+        arguments.AddRange(ResolveExtraUatArgs(build));
         return arguments;
     }
 
@@ -163,6 +169,99 @@ public static class BuildCommandFactory
     {
         return build.Platform == BuildPlatform.Android &&
                build.AndroidPackagingMode == AndroidPackagingMode.ExternalFilesIoStore;
+    }
+
+    private static IEnumerable<string> ResolveExtraUatArgs(BuildRecord build)
+    {
+        if (!RequiresAndroidExternalContainers(build))
+        {
+            return build.ExtraUatArgs;
+        }
+
+        return build.ExtraUatArgs.Where(arg => !IsAndroidExternalFilesIoStoreConflictArg(arg));
+    }
+
+    private static bool IsAndroidExternalFilesIoStoreConflictArg(string? arg)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+        {
+            return false;
+        }
+
+        var normalized = arg.Trim();
+        if (normalized.Equals("-skipiostore", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("-skippak", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("-forcepackagedata", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (TryGetAndroidIniOverrideValue(normalized, "bPackageDataInsideApk", out var packageDataInsideApkValue))
+        {
+            return !string.Equals(packageDataInsideApkValue, "False", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (TryGetAndroidIniOverrideValue(normalized, "bUseExternalFilesDir", out var useExternalFilesDirValue))
+        {
+            return !string.Equals(useExternalFilesDirValue, "True", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (TryGetAndroidIniOverrideValue(normalized, "bGenerateChunks", out var generateChunksValue))
+        {
+            return !string.Equals(generateChunksValue, "True", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (TryGetAndroidIniOverrideValue(normalized, "bGenerateNoChunks", out var generateNoChunksValue))
+        {
+            return !string.Equals(generateNoChunksValue, "False", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (TryGetAndroidIniOverrideValue(normalized, "MaxChunkSize", out var maxChunkSizeValue))
+        {
+            return !string.Equals(maxChunkSizeValue, AndroidMaxChunkSizeBytes, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (TryGetAndroidIniOverrideValue(normalized, "MaxIoStorePartitionSizeMB", out var maxIoStorePartitionSizeValue))
+        {
+            return !string.Equals(maxIoStorePartitionSizeValue, AndroidMaxIoStorePartitionSizeMb, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (string.Equals(normalized, AndroidExternalFilesObbFilterArgument, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (normalized.Contains("ObbFilters", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetAndroidIniOverrideValue(string arg, string key, out string value)
+    {
+        var marker = $":{key}=";
+        var index = arg.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            marker = $"{key}=";
+            index = arg.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+            {
+                value = string.Empty;
+                return false;
+            }
+        }
+
+        value = arg[(index + marker.Length)..].Trim();
+        if ((value.StartsWith("\"", StringComparison.Ordinal) && value.EndsWith("\"", StringComparison.Ordinal)) ||
+            (value.StartsWith("'", StringComparison.Ordinal) && value.EndsWith("'", StringComparison.Ordinal)))
+        {
+            value = value[1..^1].Trim();
+        }
+
+        return true;
     }
 
     private static void AppendUbtArgs(List<string> arguments, BuildRecord build)

@@ -49,9 +49,20 @@ public sealed record AndroidPackageArtifactDto(
     long ApkSizeBytes,
     long TotalDataSizeBytes,
     int FileCount,
+    int ContainerFileCount,
+    int LooseFileCount,
+    int ChunkCount,
+    long LargestChunkSizeBytes,
+    IReadOnlyList<AndroidPackageArtifactChunkDto> Chunks,
     string GeneratedAtUtc,
     string InstallerDownloadUrl,
     string ManifestDownloadUrl);
+
+public sealed record AndroidPackageArtifactChunkDto(
+    int ChunkId,
+    string ChunkName,
+    int FileCount,
+    long TotalSizeBytes);
 
 public sealed record BuildDetailDto(
     Guid Id,
@@ -208,6 +219,18 @@ public static class BuildContractMappings
             manifest.ApkSizeBytes,
             manifest.TotalDataSizeBytes,
             manifest.Files.Count,
+            manifest.Files.Count(file => file.IsContainer),
+            manifest.Files.Count(file => !file.IsContainer),
+            manifest.Chunks.Count,
+            manifest.Chunks.Count == 0 ? 0 : manifest.Chunks.Max(chunk => chunk.TotalSizeBytes),
+            manifest.Chunks
+                .OrderBy(chunk => chunk.ChunkId)
+                .Select(chunk => new AndroidPackageArtifactChunkDto(
+                    chunk.ChunkId,
+                    chunk.ChunkName,
+                    chunk.FileCount,
+                    chunk.TotalSizeBytes))
+                .ToList(),
             manifest.GeneratedAtUtc,
             $"/api/builds/{build.Id}/android-package/installer",
             $"/api/builds/{build.Id}/android-package/manifest");
