@@ -13,10 +13,12 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
     public const string AndroidDirectoryName = "Android";
     public const string InstallerFileName = "install-android-external-data.ps1";
     public const string ManifestFileName = "android-package-manifest.json";
+    private const string UfsManifestFileName = "Manifest_UFSFiles_Android.txt";
 
     private const string AndroidPackageNamePattern = @"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+";
     private static readonly string[] ContainerExtensions = [".pak", ".utoc", ".ucas", ".sig"];
     private static readonly string[] IgnoredStagedLooseFileNames = [];
+    private static readonly string[] StartupCriticalProjectRootFileExtensions = [".uproject"];
     private static readonly JsonSerializerOptions ManifestJsonOptions = CreateManifestJsonOptions();
     private static readonly Regex AndroidPackageNameRegex = new($"^{AndroidPackageNamePattern}$", RegexOptions.Compiled);
     private static readonly Regex PackageNameFromObbRegex = new($@"^(?:main|patch|overflow\d+)\.\d+\.(?<package>{AndroidPackageNamePattern})\.obb$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -125,6 +127,25 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
                 dataOutputDirectory,
                 androidRoot,
                 stageRelativePath,
+                isContainer: false,
+                manifestFiles);
+        }
+
+        foreach (var startupFile in LocateStartupCriticalUfsRootFiles(project, stagedRoot, stagedProjectName))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (manifestFiles.Any(existing =>
+                    string.Equals(existing.StageRelativePath, startupFile.StageRelativePath, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            CopyExternalDataFile(
+                startupFile.SourcePath,
+                dataOutputDirectory,
+                androidRoot,
+                startupFile.StageRelativePath,
                 isContainer: false,
                 manifestFiles);
         }
@@ -288,6 +309,75 @@ public sealed class AndroidPackageArtifactsService(ILogger<AndroidPackageArtifac
             .Where(path => !IsUnderDirectory(path, pakDirectoryFullPath))
             .Where(path => !IsIgnoredStagedLooseFile(path))
             .OrderBy(path => ToManifestRelativePath(stagedRoot, path), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<StartupCriticalUfsRootFile> LocateStartupCriticalUfsRootFiles(
+        ProjectConfig project,
+        string stagedRoot,
+        string stagedProjectName)
+    {
+        var manifestPath = Path.Combine(stagedRoot, UfsManifestFileName);
+        if (!File.Exists(manifestPath))
+        {
+            yield break;
+        }
+
+        var projectDirectory = Path.GetDirectoryName(project.UProjectPath);
+        if (string.IsNullOrWhiteSpace(projectDirectory))
+        {
+            yield break;
+        }
+
+        var projectRootFullPath = Path.GetFullPath(projectDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var expectedPrefix = stagedProjectName + "/";
+        var yieldedStagePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var line in File.ReadLines(manifestPath))
+        {
+            var stageRelativePath = ParseManifestStageRelativePath(line);
+            if (string.IsNullOrWhiteSpace(stageRelativePath) ||
+                !stageRelativePath.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase) ||
+                stageRelativePath.IndexOf('/', expectedPrefix.Length) >= 0 ||
+                !IsStartupCriticalProjectRootFile(stageRelativePath))
+            {
+                continue;
+            }
+
+            if (!yieldedStagePaths.Add(stageRelativePath))
+            {
+                continue;
+            }
+
+            var relativeProjectPath = stageRelativePath.Substring(expectedPrefix.Length)
+                .Replace('/', Path.DirectorySeparatorChar);
+            var sourcePath = Path.Combine(projectRootFullPath, relativeProjectPath);
+            if (!File.Exists(sourcePath))
+            {
+                continue;
+            }
+
+            yield return new StartupCriticalUfsRootFile(sourcePath, stageRelativePath);
+        }
+    }
+
+    private static string? ParseManifestStageRelativePath(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return null;
+        }
+
+        var separatorIndex = line.IndexOf('\t');
+        var path = separatorIndex >= 0 ? line[..separatorIndex] : line;
+        path = path.Trim();
+        return string.IsNullOrWhiteSpace(path) ? null : path.Replace('\\', '/');
+    }
+
+    private static bool IsStartupCriticalProjectRootFile(string stageRelativePath)
+    {
+        var extension = Path.GetExtension(stageRelativePath);
+        return StartupCriticalProjectRootFileExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
     }
 
     private static void CopyExternalDataFile(
@@ -1384,4 +1474,6 @@ exit /b 0
         string Version);
 
     private sealed record AndroidPackageArtifactChunkIdentity(int ChunkId, string ChunkName);
+
+    private sealed record StartupCriticalUfsRootFile(string SourcePath, string StageRelativePath);
 }

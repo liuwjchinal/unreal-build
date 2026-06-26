@@ -18,6 +18,10 @@ public sealed class AndroidPackageArtifactsServiceTests
         var stagedPaks = Path.Combine(projectRoot, "Saved", "StagedBuilds", "Android_ASTC", "UEStarterGame", "Content", "Paks");
         Directory.CreateDirectory(stagedPaks);
         Directory.CreateDirectory(Path.Combine(archiveRoot, "Android_ASTC"));
+        await File.WriteAllTextAsync(
+            Path.Combine(projectRoot, "UEStarterGame.uproject"),
+            "{}",
+            new UTF8Encoding(false));
         var stagedLooseFile = Path.Combine(stagedRoot, "Engine", "Content", "Renderer", "TessellationTable.bin");
         Directory.CreateDirectory(Path.GetDirectoryName(stagedLooseFile)!);
 
@@ -37,7 +41,11 @@ public sealed class AndroidPackageArtifactsServiceTests
         await File.WriteAllTextAsync(Path.Combine(stagedPaks, "pakchunk0-Android_ASTC.sig"), "sig", new UTF8Encoding(false));
         await File.WriteAllTextAsync(Path.Combine(stagedPaks, "pakchunk101-Android_ASTC_0.ucas"), "map-ucas", new UTF8Encoding(false));
         await File.WriteAllTextAsync(stagedLooseFile, "loose", new UTF8Encoding(false));
-        await File.WriteAllTextAsync(Path.Combine(stagedRoot, "Manifest_UFSFiles_Android.txt"), "manifest", new UTF8Encoding(false));
+        await File.WriteAllTextAsync(
+            Path.Combine(stagedRoot, "Manifest_UFSFiles_Android.txt"),
+            "UEStarterGame/UEStarterGame.uproject\t2026-06-23T08:32:38.734Z" + Environment.NewLine +
+            "UEStarterGame/AssetRegistry.bin\t2026-06-23T08:32:38.734Z" + Environment.NewLine,
+            new UTF8Encoding(false));
         await File.WriteAllTextAsync(Path.Combine(stagedRoot, "UECommandLine.txt"), "cmd", new UTF8Encoding(false));
 
         var project = new ProjectConfig
@@ -78,7 +86,7 @@ public sealed class AndroidPackageArtifactsServiceTests
         Assert.Equal("Android/apk/UEStarterGame-arm64.apk", NormalizeArchivePath(archiveRoot, Path.Combine(archiveRoot, "Android", manifest.ApkPath)));
         Assert.Equal("data/UEStarterGame", manifest.DataRoot);
         Assert.Equal("obb", manifest.ObbRoot);
-        Assert.Equal(7, manifest.Files.Count);
+        Assert.Equal(8, manifest.Files.Count);
         Assert.Equal(2, manifest.Chunks.Count);
         var supportObb = Assert.Single(manifest.ObbFiles);
         Assert.Equal("main.1.com.example.uestartergame.obb", supportObb.FileName);
@@ -100,6 +108,11 @@ public sealed class AndroidPackageArtifactsServiceTests
             file.StageRelativePath == "UECommandLine.txt" &&
             !file.IsContainer &&
             file.ChunkId is null);
+        Assert.Contains(manifest.Files, file =>
+            file.FileName == "UEStarterGame.uproject" &&
+            file.StageRelativePath == "UEStarterGame/UEStarterGame.uproject" &&
+            !file.IsContainer &&
+            file.ChunkId is null);
         var chunk0 = Assert.Single(manifest.Chunks, chunk => chunk.ChunkId == 0);
         Assert.Equal("chunk0", chunk0.ChunkName);
         Assert.Equal(4, chunk0.FileCount);
@@ -112,6 +125,8 @@ public sealed class AndroidPackageArtifactsServiceTests
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "UEStarterGame", "Content", "Paks", "pakchunk0-Android_ASTC.ucas")));
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "Engine", "Content", "Renderer", "TessellationTable.bin")));
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "UECommandLine.txt")));
+        Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "UEStarterGame", "UEStarterGame.uproject")));
+        Assert.False(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "UEStarterGame", "AssetRegistry.bin")));
         Assert.False(File.Exists(Path.Combine(archiveRoot, "Android", "data", "UEStarterGame", "Manifest_UFSFiles_Android.txt")));
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", AndroidPackageArtifactsService.InstallerFileName)));
         Assert.True(File.Exists(Path.Combine(archiveRoot, "Android", AndroidPackageArtifactsService.ManifestFileName)));
@@ -138,6 +153,7 @@ public sealed class AndroidPackageArtifactsServiceTests
         Assert.Contains("$SelectedFiles = @($Files | Where-Object { !$_.IsContainer }) + $SelectedContainers", script, StringComparison.Ordinal);
         Assert.Contains("StagePath = 'Engine/Content/Renderer/TessellationTable.bin'; IsContainer = $false", script, StringComparison.Ordinal);
         Assert.Contains("StagePath = 'UECommandLine.txt'; IsContainer = $false", script, StringComparison.Ordinal);
+        Assert.Contains("StagePath = 'UEStarterGame/UEStarterGame.uproject'; IsContainer = $false", script, StringComparison.Ordinal);
         Assert.Contains("--clean-data cannot be combined with --chunks", script, StringComparison.Ordinal);
         Assert.Contains("Get-ContainerChunkIdFromFileName $remoteName", script, StringComparison.Ordinal);
         Assert.Contains("Stale remote cleanup is scoped to selected chunks.", script, StringComparison.Ordinal);
